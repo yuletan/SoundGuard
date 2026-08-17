@@ -23,6 +23,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.sqrt
@@ -48,6 +49,7 @@ data class LiveAudioState(
     val lastEmergencyConfidence: Float? = null,
     val alertHistory: List<AlertEvent> = emptyList(),
     val activeIncident: IncidentRecord? = null,
+    val backendIncidentId: String? = null,
 )
 
 class AudioMonitoringService : Service() {
@@ -304,6 +306,15 @@ class AudioMonitoringService : Service() {
     private fun persistIncident(event: AlertEvent) {
         serviceScope.launch {
             IncidentClient(applicationContext).createIncident(event)
+                .onSuccess { id ->
+                    if (id != null) {
+                        _audioState.update { state ->
+                            if (state.alertHistory.lastOrNull()?.timestamp == event.timestamp) {
+                                state.copy(backendIncidentId = id)
+                            } else state
+                        }
+                    }
+                }
                 .onFailure { Log.w(TAG, "Could not persist incident: ${it.message}") }
         }
     }

@@ -74,8 +74,10 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
+import java.util.Date
+
+private const val JAMES_TEST_ID = "7f3c2a91-6b84-4d1e-9f52-8a7c6b3d1042"
 
 private enum class AppScreen {
     Loading,
@@ -123,6 +125,8 @@ class MainActivity : ComponentActivity() {
     private var demoPhotoRequestedAt by mutableStateOf<Long?>(null)
     private var demoPhotoDecisionAt by mutableStateOf<Long?>(null)
     private var demoPhotoPath by mutableStateOf<String?>(null)
+    private var demoSnapshotRequest by mutableStateOf<SnapshotRequest?>(null)
+    private var demoSnapshotMessage by mutableStateOf<String?>(null)
 
     // Role Switch Dialog States
     private var showBlockedSwitchDialog by mutableStateOf(false)
@@ -212,7 +216,18 @@ class MainActivity : ComponentActivity() {
                             },
                             onFinished = { capturedPath ->
                                 cameraReady = true
-                                if (returnToPreviewAfterCamera) demoPhotoPath = capturedPath
+                                if (returnToPreviewAfterCamera) {
+                                    demoPhotoPath = capturedPath
+                                    demoSnapshotRequest?.let { request ->
+                                        val savedPath = capturedPath ?: return@let
+                                        lifecycleScope.launch {
+                                            SnapshotClient(this@MainActivity)
+                                                .uploadSnapshot(request, java.io.File(savedPath))
+                                                .onSuccess { demoSnapshotMessage = "Photo uploaded to secure storage." }
+                                                .onFailure { demoSnapshotMessage = "Photo upload failed: ${it.message}" }
+                                        }
+                                    }
+                                }
                                 screen = if (returnToPreviewAfterCamera) AppScreen.CaregiverPreview else AppScreen.Setup
                                 returnToPreviewAfterCamera = false
                             },
@@ -291,20 +306,12 @@ class MainActivity : ComponentActivity() {
                               photoRequested = demoPhotoRequested,
                               photoDecision = demoPhotoDecision,
                               photoRequestedAt = demoPhotoRequestedAt,
-                              photoDecisionAt = demoPhotoDecisionAt,
-                              photoPath = demoPhotoPath,
-                              onOpenCamera = {
-                                  demoPhotoRequested = true
-                                  demoPhotoDecision = "approved"
-                                  demoPhotoRequestedAt = demoPhotoRequestedAt ?: System.currentTimeMillis()
-                                  demoPhotoDecisionAt = System.currentTimeMillis()
-                                  returnToPreviewAfterCamera = true
-                                  if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                                      screen = AppScreen.CameraTest
-                                  } else {
-                                      cameraPermission.launch(Manifest.permission.CAMERA)
-                                  }
-                              },
+                               photoDecisionAt = demoPhotoDecisionAt,
+                               photoPath = demoPhotoPath,
+                               snapshotMessage = demoSnapshotMessage,
+                               onOpenCamera = {
+                                   requestDemoSnapshotAndOpenCamera()
+                               },
                          )
                          AppScreen.Settings -> SettingsScreen(
                             fullName = fullName,
@@ -619,6 +626,34 @@ class MainActivity : ComponentActivity() {
             notificationClient.acknowledge(id)
                 .onSuccess { refreshCaregiverData() }
                 .onFailure { dashboardMessage = it.message }
+        }
+    }
+
+    private fun requestDemoSnapshotAndOpenCamera() {
+        val incidentId = AudioMonitoringService.audioState.value.backendIncidentId
+        if (incidentId == null) {
+            demoSnapshotMessage = "Waiting for the incident to finish syncing to Supabase."
+            return
+        }
+        lifecycleScope.launch {
+            val beneficiaryId = previewBeneficiary?.beneficiaryId ?: JAMES_TEST_ID
+            SnapshotClient(this@MainActivity)
+                .requestSnapshot(incidentId, beneficiaryId)
+                .onSuccess { request ->
+                    demoSnapshotRequest = request
+                    demoPhotoRequested = true
+                    demoPhotoDecision = "approved"
+                    demoPhotoRequestedAt = demoPhotoRequestedAt ?: System.currentTimeMillis()
+                    demoPhotoDecisionAt = System.currentTimeMillis()
+                    demoSnapshotMessage = "Photo request logged. Capture a photo to upload it."
+                    returnToPreviewAfterCamera = true
+                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        screen = AppScreen.CameraTest
+                    } else {
+                        cameraPermission.launch(Manifest.permission.CAMERA)
+                    }
+                }
+                .onFailure { demoSnapshotMessage = "Photo request failed: ${it.message}" }
         }
     }
 
@@ -1496,6 +1531,7 @@ private fun CaregiverPreviewScreen(
     photoRequestedAt: Long?,
     photoDecisionAt: Long?,
     photoPath: String?,
+    snapshotMessage: String?,
     onOpenCamera: () -> Unit,
 ) {
     var showAlertDialog by remember { mutableStateOf(false) }
@@ -1627,6 +1663,14 @@ private fun CaregiverPreviewScreen(
                                 Button(onClick = { photoDecision = "approved"; photoDecisionAt = System.currentTimeMillis(); onOpenCamera() }) { Text("Approve") }
                                 OutlinedButton(onClick = { photoDecision = "declined"; photoDecisionAt = System.currentTimeMillis() }) { Text("Decline") }
                             }
+                        }
+                        snapshotMessage?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (it.contains("failed", ignoreCase = true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 8.dp),
+                            )
                         }
                     }
                 } else {
