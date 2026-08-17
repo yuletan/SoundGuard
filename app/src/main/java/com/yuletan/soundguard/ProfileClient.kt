@@ -52,7 +52,9 @@ class ProfileClient(context: Context) {
                     email = obj.optString("email", ""),
                     fullName = obj.optString("full_name", ""),
                     phone = obj.optString("phone", ""),
-                    role = obj.optString("role", ""),
+                    role = obj.optString("role", "")
+                        .takeUnless { it.equals("null", ignoreCase = true) }
+                        .orEmpty(),
                     setupCompletedAt = obj.optString("setup_completed_at").takeIf { it.isNotBlank() },
                 )
             } finally {

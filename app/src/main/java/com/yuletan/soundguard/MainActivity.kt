@@ -449,7 +449,9 @@ class MainActivity : ComponentActivity() {
                         fullName = profile.fullName
                         email = profile.email
                         phone = profile.phone
-                        selectedRole = profile.role.replaceFirstChar { it.uppercase() }
+                        selectedRole = profile.role
+                            .takeUnless { it.equals("null", ignoreCase = true) || it.isBlank() }
+                            ?.replaceFirstChar { it.uppercase() }
 
                         if (profile.setupCompletedAt != null) {
                             if (profile.role.equals("caregiver", ignoreCase = true)) {
@@ -565,7 +567,7 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Enter a valid international phone number.", Toast.LENGTH_SHORT).show()
             return
         }
-        selectedRole?.let { role ->
+        selectedRole?.takeUnless { it.equals("null", ignoreCase = true) || it.isBlank() }?.let { role ->
             lifecycleScope.launch {
                 profileClient.saveProfile(email, fullName, phone, role)
                     .onSuccess {
@@ -575,7 +577,7 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this@MainActivity, "Failed: ${it.message}", Toast.LENGTH_LONG).show()
                     }
             }
-        }
+        } ?: Toast.makeText(this, "Choose a role before saving your profile.", Toast.LENGTH_LONG).show()
     }
 
     private fun handleRoleSwitchRequest() {
