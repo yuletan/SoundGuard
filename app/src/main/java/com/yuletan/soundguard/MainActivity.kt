@@ -109,6 +109,7 @@ class MainActivity : ComponentActivity() {
     // Dashboard State
     private var connectedCaregivers by mutableStateOf<List<CaregiverMember>>(emptyList())
     private var monitoredBeneficiaries by mutableStateOf<List<MonitoredBeneficiary>>(emptyList())
+    private var caregiverNotifications by mutableStateOf<List<CaregiverNotification>>(emptyList())
     private var previewBeneficiary by mutableStateOf<MonitoredBeneficiary?>(null)
     private var generatedPairingCode by mutableStateOf<String?>(null)
     private var dashboardLoading by mutableStateOf(false)
@@ -129,6 +130,7 @@ class MainActivity : ComponentActivity() {
     private val authClient by lazy { AuthClient(this) }
     private val profileClient by lazy { ProfileClient(this) }
     private val careClient by lazy { CareClient(this) }
+    private val notificationClient by lazy { NotificationClient(this) }
 
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -271,7 +273,9 @@ class MainActivity : ComponentActivity() {
                              onRemoveBeneficiary = { connectionId -> removeBeneficiary(connectionId) },
                              onCall = { targetPhone -> callPhoneNumber(targetPhone) },
                              onOpenBeneficiary = { beneficiary -> previewBeneficiary = beneficiary; screen = AppScreen.CaregiverPreview },
-                            onOpenSettings = { screen = AppScreen.Settings },
+                             notifications = caregiverNotifications,
+                             onAcknowledgeNotification = { id -> acknowledgeNotification(id) },
+                             onOpenSettings = { screen = AppScreen.Settings },
                              onRefresh = { refreshCaregiverData() },
                          )
                          AppScreen.CaregiverPreview -> CaregiverPreviewScreen(
@@ -602,7 +606,17 @@ class MainActivity : ComponentActivity() {
                 .onFailure { err ->
                     dashboardMessage = err.message
                 }
+            notificationClient.fetchMine()
+                .onSuccess { list -> caregiverNotifications = list }
             dashboardLoading = false
+        }
+    }
+
+    private fun acknowledgeNotification(id: String) {
+        lifecycleScope.launch {
+            notificationClient.acknowledge(id)
+                .onSuccess { refreshCaregiverData() }
+                .onFailure { dashboardMessage = it.message }
         }
     }
 
@@ -1761,6 +1775,8 @@ private fun CaregiverDashboard(
     onRemoveBeneficiary: (String) -> Unit,
     onCall: (String) -> Unit,
     onOpenBeneficiary: (MonitoredBeneficiary) -> Unit,
+    notifications: List<CaregiverNotification>,
+    onAcknowledgeNotification: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -1824,6 +1840,30 @@ private fun CaregiverDashboard(
         }
 
         Spacer(Modifier.height(20.dp))
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Notification timeline", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                if (notifications.isEmpty()) {
+                    Text("No backend notifications yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                } else {
+                    notifications.take(10).forEach { notification ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Incident ${notification.incidentId.take(8)}", fontWeight = FontWeight.Bold)
+                                Text("${notification.status} • ${notification.createdAt}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (notification.status != "acknowledged") {
+                                TextButton(onClick = { onAcknowledgeNotification(notification.id) }) { Text("Acknowledge") }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Beneficiaries List
         Card(modifier = Modifier.fillMaxWidth()) {
