@@ -1491,9 +1491,6 @@ private fun BeneficiaryDashboard(
                     modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onLinkDemoCaregiver) {
-                        Text("Link Demo Caregiver")
-                    }
                     OutlinedButton(onClick = onOpenCaregiverPreview) {
                         Text("Preview Dashboard")
                     }
@@ -1707,11 +1704,6 @@ private fun CaregiverPreviewScreen(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
-                if (!demoCaregiverLinked) {
-                    Button(onClick = onLinkDemoCaregiver, modifier = Modifier.padding(top = 10.dp)) {
-                        Text("Link Demo Caregiver")
-                    }
-                }
             }
         }
 
@@ -1738,7 +1730,6 @@ private fun CaregiverPreviewScreen(
                         modifier = Modifier.padding(top = 4.dp),
                     )
                     Row(modifier = Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { acknowledged = true; acknowledgedAt = System.currentTimeMillis(); showAlertDialog = false }) { Text("Acknowledge") }
                         OutlinedButton(onClick = onCall) { Text("Call") }
                     }
                     OutlinedButton(
@@ -1874,7 +1865,7 @@ private fun CaregiverPreviewScreen(
                     )
                 },
                 confirmButton = {
-                    Button(onClick = { acknowledged = true; acknowledgedAt = System.currentTimeMillis(); showAlertDialog = false }) { Text("Acknowledge") }
+                     TextButton(onClick = { showAlertDialog = false }) { Text("Close") }
                 },
                 dismissButton = {
                     TextButton(onClick = { showAlertDialog = false; onCall() }) { Text("Call") }
@@ -2066,12 +2057,7 @@ private fun CaregiverDashboard(
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
-                            if (notification.status != "acknowledged") {
-                                Column(horizontalAlignment = Alignment.End) {
-                                    TextButton(onClick = { onOpenNotification(notification) }) { Text("Open Chat") }
-                                    TextButton(onClick = { onAcknowledgeNotification(notification.id) }) { Text("Acknowledge") }
-                                }
-                            }
+                            TextButton(onClick = { onOpenNotification(notification) }) { Text("Open Chat") }
                         }
                     }
                 }
