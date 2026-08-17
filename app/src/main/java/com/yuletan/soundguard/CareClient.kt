@@ -37,6 +37,32 @@ class CareClient(context: Context) {
 
     private val authClient = AuthClient(context)
 
+    suspend fun linkDemoJames(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.accessToken() ?: error("Session expired. Please sign in again.")
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/rpc/link_demo_james"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+            }
+            try {
+                connection.outputStream.use { it.write("{}".toByteArray()) }
+                val responseCode = connection.responseCode
+                if (responseCode !in 200..299) {
+                    val response = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    error("Demo caregiver link failed with HTTP $responseCode: $response")
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
     suspend fun createPairingCode(): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val token = authClient.accessToken() ?: error("Session expired. Please sign in again.")

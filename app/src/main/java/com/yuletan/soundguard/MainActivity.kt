@@ -301,7 +301,16 @@ class MainActivity : ComponentActivity() {
                              audioState = liveAudioState,
                              demoCaregiverLinked = demoCaregiverLinked,
                               onBack = { screen = if (previewBeneficiary != null) AppScreen.CaregiverDashboard else AppScreen.BeneficiaryDashboard },
-                              onLinkDemoCaregiver = { demoCaregiverLinked = true },
+                              onLinkDemoCaregiver = {
+                                  lifecycleScope.launch {
+                                      careClient.linkDemoJames()
+                                          .onSuccess {
+                                              demoCaregiverLinked = true
+                                              demoSnapshotMessage = "Demo caregiver linked to James."
+                                          }
+                                          .onFailure { demoSnapshotMessage = "Demo link failed: ${it.message}" }
+                                  }
+                              },
                               onCall = { callPhoneNumber(previewBeneficiary?.phone ?: phone) },
                               photoRequested = demoPhotoRequested,
                               photoDecision = demoPhotoDecision,
@@ -310,7 +319,8 @@ class MainActivity : ComponentActivity() {
                                photoPath = demoPhotoPath,
                                snapshotMessage = demoSnapshotMessage,
                                onOpenCamera = {
-                                   requestDemoSnapshotAndOpenCamera()
+                                   if (demoCaregiverLinked) requestDemoSnapshotAndOpenCamera()
+                                   else demoSnapshotMessage = "Link the demo caregiver first."
                                },
                          )
                          AppScreen.Settings -> SettingsScreen(
