@@ -1499,7 +1499,7 @@ private fun CaregiverPreviewScreen(
     onOpenCamera: () -> Unit,
 ) {
     var showAlertDialog by remember { mutableStateOf(false) }
-    var shownAlertTimestamp by remember { mutableStateOf<Long?>(null) }
+    var shownAlertTimestamp by remember { mutableStateOf(audioState.alertHistory.lastOrNull()?.timestamp) }
     var acknowledged by remember { mutableStateOf(false) }
     var photoRequested by remember { mutableStateOf(photoRequested) }
     var photoDecision by remember { mutableStateOf(photoDecision) }

@@ -289,7 +289,7 @@ class AudioMonitoringService : Service() {
     ): List<AlertEvent> {
         if (classification.severity == SoundSeverity.None) return existing
         val now = System.currentTimeMillis()
-        if (classification.category == lastRecordedCategory && now - lastRecordedAt < 10_000L) return existing
+        if (classification.category == lastRecordedCategory && now - lastRecordedAt < 15_000L) return existing
         lastRecordedCategory = classification.category
         lastRecordedAt = now
         return (existing + AlertEvent(
