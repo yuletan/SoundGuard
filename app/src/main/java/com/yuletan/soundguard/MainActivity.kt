@@ -114,6 +114,7 @@ class MainActivity : ComponentActivity() {
     private var connectedCaregivers by mutableStateOf<List<CaregiverMember>>(emptyList())
     private var monitoredBeneficiaries by mutableStateOf<List<MonitoredBeneficiary>>(emptyList())
     private var caregiverNotifications by mutableStateOf<List<CaregiverNotification>>(emptyList())
+    private var selectedNotification by mutableStateOf<CaregiverNotification?>(null)
     private var previewBeneficiary by mutableStateOf<MonitoredBeneficiary?>(null)
     private var generatedPairingCode by mutableStateOf<String?>(null)
     private var dashboardLoading by mutableStateOf(false)
@@ -294,6 +295,11 @@ class MainActivity : ComponentActivity() {
                              onOpenBeneficiary = { beneficiary -> previewBeneficiary = beneficiary; screen = AppScreen.CaregiverPreview },
                              notifications = caregiverNotifications,
                              onAcknowledgeNotification = { id -> acknowledgeNotification(id) },
+                             onOpenNotification = { notification ->
+                                 selectedNotification = notification
+                                 previewBeneficiary = monitoredBeneficiaries.firstOrNull { it.beneficiaryId == notification.beneficiaryId }
+                                 screen = AppScreen.CaregiverPreview
+                             },
                              onOpenSettings = { screen = AppScreen.Settings },
                              onRefresh = { refreshCaregiverData() },
                          )
@@ -320,6 +326,7 @@ class MainActivity : ComponentActivity() {
                                photoDecisionAt = demoPhotoDecisionAt,
                                photoPath = demoPhotoPath,
                                snapshotMessage = demoSnapshotMessage,
+                               backendAlert = selectedNotification,
                                onOpenCamera = {
                                    if (demoCaregiverLinked) requestDemoSnapshotAndOpenCamera()
                                    else demoSnapshotMessage = "Link the demo caregiver first."
@@ -666,7 +673,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestDemoSnapshotAndOpenCamera() {
-        val incidentId = AudioMonitoringService.audioState.value.backendIncidentId
+        val incidentId = selectedNotification?.incidentId ?: AudioMonitoringService.audioState.value.backendIncidentId
         if (incidentId == null) {
             demoSnapshotMessage = "Waiting for the incident to finish syncing to Supabase."
             return
@@ -1590,6 +1597,7 @@ private fun CaregiverPreviewScreen(
     beneficiaryName: String,
     beneficiaryPhone: String,
     audioState: LiveAudioState,
+    backendAlert: CaregiverNotification?,
     demoCaregiverLinked: Boolean,
     onBack: () -> Unit,
     onLinkDemoCaregiver: () -> Unit,
@@ -1630,10 +1638,13 @@ private fun CaregiverPreviewScreen(
     }
 
     val latestEvent = audioState.alertHistory.lastOrNull()
-    val hasAlert = latestEvent != null
-    val alertLabel = latestEvent?.label ?: audioState.lastEmergencyLabel ?: audioState.displayLabel
-    val alertConfidence = latestEvent?.confidence ?: audioState.lastEmergencyConfidence ?: audioState.confidence
+    val hasAlert = latestEvent != null || backendAlert != null
+    val alertLabel = latestEvent?.label ?: backendAlert?.soundLabel?.ifBlank { null }
+        ?: audioState.lastEmergencyLabel ?: audioState.displayLabel
+    val alertConfidence = latestEvent?.confidence ?: backendAlert?.confidence
+        ?: audioState.lastEmergencyConfidence ?: audioState.confidence
     val alertTimestamp = latestEvent?.timestamp ?: audioState.lastEmergencyTimestamp
+    val alertTimeText = if (alertTimestamp != null) formatAlertTime(alertTimestamp) else backendAlert?.createdAt ?: "Unknown"
 
     Column(
         modifier = Modifier
@@ -1692,7 +1703,7 @@ private fun CaregiverPreviewScreen(
                 if (hasAlert) {
                     Text("ALERT: $alertLabel", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                     Text("Confidence: ${(alertConfidence * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
-                    Text("Detected at ${formatAlertTime(alertTimestamp)}", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
+                    Text("Detected at $alertTimeText", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
                     Text(
                         if (acknowledged) "Status: Acknowledged by caregiver" else "Status: Caregiver notification required",
                         style = MaterialTheme.typography.bodySmall,
@@ -1754,7 +1765,7 @@ private fun CaregiverPreviewScreen(
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("Messages", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(10.dp))
-                if (audioState.alertHistory.isEmpty()) {
+                if (audioState.alertHistory.isEmpty() && backendAlert == null) {
                     ChatBubble(
                         text = "SoundGuard • Monitoring active\nNo incidents to review",
                         fromSystem = true,
@@ -1768,6 +1779,13 @@ private fun CaregiverPreviewScreen(
                             timestamp = event.timestamp,
                         )
                         Spacer(Modifier.height(8.dp))
+                    }
+                    if (audioState.alertHistory.isEmpty() && backendAlert != null) {
+                        ChatBubble(
+                            text = "🚨 ${backendAlert.soundLabel.ifBlank { "Alert" }}\nConfidence: ${(backendAlert.confidence * 100).toInt()}%\nStatus: ${backendAlert.status}",
+                            fromSystem = true,
+                            timestamp = null,
+                        )
                     }
                 }
                 if (photoRequested) {
@@ -1823,7 +1841,7 @@ private fun CaregiverPreviewScreen(
                     Text(
                         "$alertLabel detected for $beneficiaryName.\n\n" +
                             "Confidence: ${(alertConfidence * 100).toInt()}%\n" +
-                            "Time: ${formatAlertTime(alertTimestamp)}\n\n" +
+                            "Time: $alertTimeText\n\n" +
                             "Check on the beneficiary and request a verification photo if authorized.",
                     )
                 },
@@ -1921,6 +1939,7 @@ private fun CaregiverDashboard(
     onOpenBeneficiary: (MonitoredBeneficiary) -> Unit,
     notifications: List<CaregiverNotification>,
     onAcknowledgeNotification: (String) -> Unit,
+    onOpenNotification: (CaregiverNotification) -> Unit,
     onOpenSettings: () -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -1997,7 +2016,16 @@ private fun CaregiverDashboard(
                 } else {
                     notifications.take(10).forEach { notification ->
                         Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .clickable { onOpenNotification(notification) }
+                                .background(
+                                    if (notification.status != "acknowledged") MaterialTheme.colorScheme.errorContainer
+                                    else MaterialTheme.colorScheme.surface,
+                                    RoundedCornerShape(12.dp),
+                                )
+                                .padding(10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
@@ -2011,7 +2039,10 @@ private fun CaregiverDashboard(
                                 )
                             }
                             if (notification.status != "acknowledged") {
-                                TextButton(onClick = { onAcknowledgeNotification(notification.id) }) { Text("Acknowledge") }
+                                Column(horizontalAlignment = Alignment.End) {
+                                    TextButton(onClick = { onOpenNotification(notification) }) { Text("Open Chat") }
+                                    TextButton(onClick = { onAcknowledgeNotification(notification.id) }) { Text("Acknowledge") }
+                                }
                             }
                         }
                     }

@@ -11,6 +11,7 @@ import java.net.URL
 data class CaregiverNotification(
     val id: String,
     val incidentId: String,
+    val beneficiaryId: String,
     val soundLabel: String,
     val severity: String,
     val confidence: Float,
@@ -25,7 +26,7 @@ class NotificationClient(context: Context) {
         runCatching {
             val token = authClient.accessToken() ?: return@runCatching emptyList()
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
-                "/rest/v1/notifications?select=id,incident_id,status,created_at,incidents(sound_label,severity,confidence)&order=created_at.desc&limit=50"
+                "/rest/v1/notifications?select=id,incident_id,status,created_at,incidents(beneficiary_id,sound_label,severity,confidence)&order=created_at.desc&limit=50"
             val connection = open(endpoint, token, "GET")
             try {
                 val response = readResponse(connection)
@@ -36,6 +37,7 @@ class NotificationClient(context: Context) {
                         CaregiverNotification(
                             id = row.getString("id"),
                             incidentId = row.getString("incident_id"),
+                            beneficiaryId = incident?.optString("beneficiary_id").orEmpty(),
                             soundLabel = incident?.optString("sound_label").orEmpty(),
                             severity = incident?.optString("severity").orEmpty(),
                             confidence = incident?.optDouble("confidence", 0.0)?.toFloat() ?: 0f,
