@@ -180,4 +180,30 @@ class ProfileClient(context: Context) {
             }
         }
     }
+
+    suspend fun resetAllAccountData(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.accessToken() ?: error("Your session has expired.")
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/rpc/reset_my_account_data"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+            }
+            try {
+                connection.outputStream.use { it.write("{}".toByteArray()) }
+                val responseCode = connection.responseCode
+                if (responseCode !in 200..299) {
+                    val response = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    error("Account reset failed with HTTP $responseCode: $response")
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
 }

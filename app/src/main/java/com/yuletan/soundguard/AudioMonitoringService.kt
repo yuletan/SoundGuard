@@ -88,6 +88,14 @@ class AudioMonitoringService : Service() {
             context.startService(intent)
         }
 
+        fun resetSessionState() {
+            simulatedUntil = 0L
+            lastRecordedCategory = null
+            lastRecordedAt = 0L
+            incidentEngine.reset()
+            _audioState.value = LiveAudioState()
+        }
+
         fun simulateSound(category: String, label: String, confidence: Float, isEmergency: Boolean) {
             val isAmbient = (category == "background")
             simulatedUntil = if (isAmbient) 0L else System.currentTimeMillis() + 8000L

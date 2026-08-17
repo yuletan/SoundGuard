@@ -127,6 +127,8 @@ class MainActivity : ComponentActivity() {
     private var demoPhotoPath by mutableStateOf<String?>(null)
     private var demoSnapshotRequest by mutableStateOf<SnapshotRequest?>(null)
     private var demoSnapshotMessage by mutableStateOf<String?>(null)
+    private var loadedSessionUserId: String? = null
+    private var showResetDataDialog by mutableStateOf(false)
 
     // Role Switch Dialog States
     private var showBlockedSwitchDialog by mutableStateOf(false)
@@ -343,7 +345,23 @@ class MainActivity : ComponentActivity() {
                                     AppScreen.BeneficiaryDashboard
                                 }
                             },
-                            onSignOut = { signOut() },
+                             onSignOut = { signOut() },
+                             onResetAllData = { showResetDataDialog = true },
+                         )
+                    }
+
+                    // Blocked Role Switch Dialog
+                    if (showResetDataDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showResetDataDialog = false },
+                            title = { Text("Delete all account data?") },
+                            text = { Text("This permanently deletes your connections, incidents, notifications, snapshots, device tokens, settings, and profile setup. You will return to role selection." ) },
+                            confirmButton = {
+                                Button(onClick = { showResetDataDialog = false; resetAllAccountData() }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                                    Text("Delete all data")
+                                }
+                            },
+                            dismissButton = { TextButton(onClick = { showResetDataDialog = false }) { Text("Cancel") } },
                         )
                     }
 
@@ -414,6 +432,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val token = authClient.accessToken()
             if (token.isNullOrBlank()) {
+                resetAccountState()
                 screen = AppScreen.Login
                 return@launch
             }
@@ -421,6 +440,11 @@ class MainActivity : ComponentActivity() {
             profileClient.fetchMyProfile()
                 .onSuccess { profile ->
                     if (profile != null) {
+                        val currentUserId = authClient.userId()
+                        if (loadedSessionUserId != null && loadedSessionUserId != currentUserId) {
+                            resetAccountState()
+                        }
+                        loadedSessionUserId = currentUserId
                         PushTokenRegistrar.register(this@MainActivity)
                         fullName = profile.fullName
                         email = profile.email
@@ -747,16 +771,48 @@ class MainActivity : ComponentActivity() {
 
     private fun signOut() {
         AudioMonitoringService.stop(this)
+        resetAccountState()
         authClient.signOut()
         screen = AppScreen.Login
+    }
+
+    private fun resetAllAccountData() {
+        lifecycleScope.launch {
+            profileClient.resetAllAccountData()
+                .onSuccess {
+                    resetAccountState()
+                    screen = AppScreen.RoleSelection
+                    Toast.makeText(this@MainActivity, "All account data deleted. Choose your role again.", Toast.LENGTH_LONG).show()
+                }
+                .onFailure { Toast.makeText(this@MainActivity, "Could not delete account data: ${it.message}", Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    private fun resetAccountState() {
+        demoPhotoPath?.let { path -> runCatching { java.io.File(path).delete() } }
+        AudioMonitoringService.resetSessionState()
+        loadedSessionUserId = null
         email = ""
         otp = ""
+        otpSent = false
         fullName = ""
         phone = ""
         selectedRole = null
+        monitoringConsent = false
+        termsAccepted = false
         connectedCaregivers = emptyList()
         monitoredBeneficiaries = emptyList()
+        caregiverNotifications = emptyList()
+        previewBeneficiary = null
         generatedPairingCode = null
+        demoCaregiverLinked = false
+        demoPhotoRequested = false
+        demoPhotoDecision = null
+        demoPhotoRequestedAt = null
+        demoPhotoDecisionAt = null
+        demoPhotoPath = null
+        demoSnapshotRequest = null
+        demoSnapshotMessage = null
     }
 }
 
@@ -2063,6 +2119,7 @@ private fun SettingsScreen(
     onCameraTest: () -> Unit,
     onBack: () -> Unit,
     onSignOut: () -> Unit,
+    onResetAllData: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -2169,6 +2226,14 @@ private fun SettingsScreen(
         Spacer(Modifier.height(24.dp))
 
         // Sign Out
+        OutlinedButton(
+            onClick = onResetAllData,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+        ) {
+            Text("Delete All Data & Start Over")
+        }
+        Spacer(Modifier.height(10.dp))
         Button(
             onClick = onSignOut,
             modifier = Modifier.fillMaxWidth().height(48.dp),
