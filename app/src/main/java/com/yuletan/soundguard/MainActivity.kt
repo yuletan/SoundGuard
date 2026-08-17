@@ -1130,10 +1130,11 @@ private fun CameraTestScreen(onBack: () -> Unit, onFinished: (String?) -> Unit) 
             )
         }
         Button(
-            onClick = { onFinished(capturedPath) },
+            onClick = { capturedPath?.let(onFinished) },
+            enabled = capturedPath != null,
             modifier = Modifier.padding(24.dp).align(Alignment.CenterHorizontally).fillMaxWidth(),
         ) {
-            Text("Finish Camera Test")
+            Text(if (capturedPath == null) "Capture a photo first" else "Finish Camera Test")
         }
     }
 }
