@@ -1470,6 +1470,7 @@ private fun BeneficiaryDashboard(
                             onSetPrimary = { onSetPrimary(caregiver.connectionId, caregiver.caregiverId) },
                             onRemove = { onRemoveCaregiver(caregiver.connectionId) },
                             onCall = { onCall(caregiver.phone) },
+                            onOpenChat = onOpenCaregiverPreview,
                         )
                     }
                 }
@@ -1574,6 +1575,7 @@ private fun CaregiverRow(
     onSetPrimary: () -> Unit,
     onRemove: () -> Unit,
     onCall: () -> Unit,
+    onOpenChat: () -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1601,6 +1603,9 @@ private fun CaregiverRow(
                     OutlinedButton(onClick = onCall, modifier = Modifier.padding(end = 6.dp)) {
                         Text("📞 Call")
                     }
+                }
+                OutlinedButton(onClick = onOpenChat, modifier = Modifier.padding(end = 6.dp)) {
+                    Text("Open Chat")
                 }
                 if (!caregiver.isPrimary) {
                     TextButton(onClick = onSetPrimary) {
