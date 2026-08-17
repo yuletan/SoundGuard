@@ -22,6 +22,10 @@ class AuthClient(context: Context) {
 
     fun userId(): String? = preferences.getString("user_id", null)
 
+    fun signOut() {
+        preferences.edit().clear().apply()
+    }
+
     suspend fun sendOtp(email: String): Result<Unit> = withContext(Dispatchers.IO) {
         request("/auth/v1/otp", JSONObject().apply {
             put("email", email.trim())

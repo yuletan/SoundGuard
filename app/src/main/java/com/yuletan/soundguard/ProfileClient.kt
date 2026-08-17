@@ -7,8 +7,59 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
+data class UserProfile(
+    val id: String,
+    val email: String,
+    val fullName: String,
+    val phone: String,
+    val role: String,
+    val setupCompletedAt: String?,
+)
+
 class ProfileClient(context: Context) {
     private val authClient = AuthClient(context)
+
+    suspend fun fetchMyProfile(): Result<UserProfile?> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.accessToken() ?: return@runCatching null
+            val userId = authClient.userId() ?: return@runCatching null
+            if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
+                error("Supabase configuration is missing in local.properties.")
+            }
+
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
+                "/rest/v1/profiles?id=eq.$userId&select=id,email,full_name,phone,role,setup_completed_at"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+            }
+
+            try {
+                val responseCode = connection.responseCode
+                val stream = if (responseCode in 200..299) connection.inputStream else connection.errorStream
+                val responseBody = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (responseCode !in 200..299) {
+                    error("Profile fetch failed with HTTP $responseCode: $responseBody")
+                }
+                val jsonArray = org.json.JSONArray(responseBody)
+                if (jsonArray.length() == 0) return@runCatching null
+                val obj = jsonArray.getJSONObject(0)
+                UserProfile(
+                    id = obj.optString("id", userId),
+                    email = obj.optString("email", ""),
+                    fullName = obj.optString("full_name", ""),
+                    phone = obj.optString("phone", ""),
+                    role = obj.optString("role", ""),
+                    setupCompletedAt = obj.optString("setup_completed_at").takeIf { it.isNotBlank() },
+                )
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
 
     suspend fun saveProfile(
         email: String,
@@ -34,12 +85,14 @@ class ProfileClient(context: Context) {
                 setRequestProperty("Prefer", "resolution=merge-duplicates,return=minimal")
                 doOutput = true
             }
+            val nowIso = java.time.Instant.now().toString()
             val body = JSONObject().apply {
                 put("id", userId)
                 put("email", email.trim())
                 put("full_name", fullName.trim())
                 put("phone", phone.trim())
                 put("role", role.lowercase())
+                put("setup_completed_at", nowIso)
             }
             try {
                 connection.outputStream.use { it.write(body.toString().toByteArray()) }

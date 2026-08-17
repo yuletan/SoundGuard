@@ -1,52 +1,79 @@
 package com.yuletan.soundguard
 
 import android.Manifest
-import android.os.Build
-import android.os.Bundle
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 private enum class AppScreen {
+    Loading,
     Login,
     RoleSelection,
     Setup,
     CameraTest,
     Terms,
-    SetupComplete,
+    BeneficiaryDashboard,
+    CaregiverDashboard,
 }
 
 class MainActivity : ComponentActivity() {
-    private var screen by mutableStateOf(AppScreen.Login)
+    private var screen by mutableStateOf(AppScreen.Loading)
     private var selectedRole by mutableStateOf<String?>(null)
     private var fullName by mutableStateOf("")
     private var phone by mutableStateOf("")
@@ -62,8 +89,18 @@ class MainActivity : ComponentActivity() {
     private var authBusy by mutableStateOf(false)
     private var authMessage by mutableStateOf<String?>(null)
     private var setupMessage by mutableStateOf<String?>(null)
+
+    // Dashboard State
+    private var connectedCaregivers by mutableStateOf<List<CaregiverMember>>(emptyList())
+    private var monitoredBeneficiaries by mutableStateOf<List<MonitoredBeneficiary>>(emptyList())
+    private var generatedPairingCode by mutableStateOf<String?>(null)
+    private var dashboardLoading by mutableStateOf(false)
+    private var dashboardMessage by mutableStateOf<String?>(null)
+    private var isMonitoringActive by mutableStateOf(false)
+
     private val authClient by lazy { AuthClient(this) }
     private val profileClient by lazy { ProfileClient(this) }
+    private val careClient by lazy { CareClient(this) }
 
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -89,121 +126,100 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         setContent {
-            SoundGuardApp(
-                screen = screen,
-                role = selectedRole,
-                onRoleSelected = { role ->
-                    selectedRole = role
-                    screen = AppScreen.Setup
-                },
-                onGoogleLogin = {
-                    startActivity(Intent(Intent.ACTION_VIEW, authClient.googleAuthorizationUri()))
-                },
-                email = email,
-                otp = otp,
-                otpSent = otpSent,
-                otpCooldownSeconds = otpCooldownSeconds,
-                authBusy = authBusy,
-                authMessage = authMessage,
-                onEmailChange = { email = it },
-                onOtpChange = { otp = it },
-                onSendOtp = {
-                    if (!Validation.isEmailValid(email)) {
-                        authMessage = "Enter a valid email address."
-                    } else {
-                        authBusy = true
-                        authMessage = null
-                        lifecycleScope.launch {
-                            authClient.sendOtp(email)
-                                .onSuccess {
-                                    otpSent = true
-                                    authMessage = "Check your email for the one-time code."
-                                    lifecycleScope.launch {
-                                        for (seconds in 60 downTo 1) {
-                                            otpCooldownSeconds = seconds
-                                            delay(1_000)
-                                        }
-                                        otpCooldownSeconds = 0
-                                    }
-                                }
-                                .onFailure {
-                                    val detail = it.message.orEmpty()
-                                    authMessage = if (detail.contains("rate", ignoreCase = true)) {
-                                        "Email rate limit reached. Wait before requesting another code, or use another test email."
-                                    } else {
-                                        detail.ifBlank { "Could not send OTP." }
-                                    }
-                                }
-                            authBusy = false
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    when (screen) {
+                        AppScreen.Loading -> LoadingScreen()
+                        AppScreen.Login -> LoginScreen(
+                            email = email,
+                            otp = otp,
+                            otpSent = otpSent,
+                            otpCooldownSeconds = otpCooldownSeconds,
+                            busy = authBusy,
+                            message = authMessage,
+                            onEmailChange = { email = it },
+                            onOtpChange = { otp = it },
+                            onSendOtp = { sendOtp() },
+                            onVerifyOtp = { verifyOtp() },
+                            onGoogleLogin = {
+                                startActivity(Intent(Intent.ACTION_VIEW, authClient.googleAuthorizationUri()))
+                            },
+                        )
+                        AppScreen.RoleSelection -> RoleSelection { role ->
+                            selectedRole = role
+                            screen = AppScreen.Setup
                         }
+                        AppScreen.Setup -> SetupScreen(
+                            role = selectedRole,
+                            fullName = fullName,
+                            phone = phone,
+                            consent = monitoringConsent,
+                            termsAccepted = termsAccepted,
+                            microphoneGranted = microphoneGranted,
+                            notificationsGranted = notificationsGranted,
+                            cameraReady = cameraReady,
+                            setupMessage = setupMessage,
+                            onFullNameChange = { fullName = it },
+                            onPhoneChange = { phone = it },
+                            onConsentChange = { monitoringConsent = it },
+                            onTermsChange = { termsAccepted = it },
+                            onOpenTerms = { screen = AppScreen.Terms },
+                            onRequestPermissions = { requestAppPermissions() },
+                            onCameraTest = { cameraPermission.launch(Manifest.permission.CAMERA) },
+                            onBack = { screen = AppScreen.RoleSelection },
+                            onConfirm = { confirmSetup() },
+                        )
+                        AppScreen.CameraTest -> CameraTestScreen(
+                            onBack = { screen = AppScreen.Setup },
+                            onFinished = {
+                                cameraReady = true
+                                screen = AppScreen.Setup
+                            },
+                        )
+                        AppScreen.Terms -> TermsScreen(
+                            onBack = { screen = AppScreen.Setup },
+                            onAccept = {
+                                termsAccepted = true
+                                screen = AppScreen.Setup
+                            },
+                        )
+                        AppScreen.BeneficiaryDashboard -> BeneficiaryDashboard(
+                            fullName = fullName,
+                            email = email,
+                            isMonitoring = isMonitoringActive,
+                            onToggleMonitoring = { isMonitoringActive = !isMonitoringActive },
+                            caregivers = connectedCaregivers,
+                            pairingCode = generatedPairingCode,
+                            loading = dashboardLoading,
+                            message = dashboardMessage,
+                            onGenerateCode = { generatePairingCode() },
+                            onCopyCode = { code -> copyToClipboard(code) },
+                            onSetPrimary = { connectionId, caregiverId -> setPrimaryCaregiver(connectionId, caregiverId) },
+                            onRemoveCaregiver = { connectionId -> removeCaregiver(connectionId) },
+                            onCall = { targetPhone -> callPhoneNumber(targetPhone) },
+                            onRefresh = { refreshBeneficiaryData() },
+                            onSignOut = { signOut() },
+                        )
+                        AppScreen.CaregiverDashboard -> CaregiverDashboard(
+                            fullName = fullName,
+                            email = email,
+                            beneficiaries = monitoredBeneficiaries,
+                            loading = dashboardLoading,
+                            message = dashboardMessage,
+                            onConnectBeneficiary = { code -> pairBeneficiary(code) },
+                            onRemoveBeneficiary = { connectionId -> removeBeneficiary(connectionId) },
+                            onCall = { targetPhone -> callPhoneNumber(targetPhone) },
+                            onRefresh = { refreshCaregiverData() },
+                            onSignOut = { signOut() },
+                        )
                     }
-                },
-                onVerifyOtp = {
-                    if (otp.trim().length < 6) {
-                        authMessage = "Enter the verification code from your email."
-                    } else {
-                        authBusy = true
-                        authMessage = null
-                        lifecycleScope.launch {
-                            authClient.verifyOtp(email, otp)
-                                .onSuccess {
-                                    screen = AppScreen.RoleSelection
-                                    authMessage = null
-                                }
-                                .onFailure { authMessage = it.message ?: "Could not verify OTP." }
-                            authBusy = false
-                        }
-                    }
-                },
-                fullName = fullName,
-                phone = phone,
-                consent = monitoringConsent,
-                termsAccepted = termsAccepted,
-                microphoneGranted = microphoneGranted,
-                notificationsGranted = notificationsGranted,
-                cameraReady = cameraReady,
-                setupMessage = setupMessage,
-                onFullNameChange = { fullName = it },
-                onPhoneChange = { phone = it },
-                onConsentChange = { monitoringConsent = it },
-                onTermsChange = { termsAccepted = it },
-                onOpenTerms = { screen = AppScreen.Terms },
-                onRequestPermissions = {
-                    val permissions = buildList {
-                        add(Manifest.permission.RECORD_AUDIO)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            add(Manifest.permission.POST_NOTIFICATIONS)
-                        }
-                    }
-                    setupPermissions.launch(permissions.toTypedArray())
-                },
-                onCameraTest = {
-                    cameraPermission.launch(Manifest.permission.CAMERA)
-                },
-                onSetupBack = { screen = AppScreen.RoleSelection },
-                onCameraBack = { screen = AppScreen.Setup },
-                onCameraFinished = {
-                    cameraReady = true
-                    screen = AppScreen.Setup
-                },
-                onTermsBack = { screen = AppScreen.Setup },
-                onTermsAccepted = {
-                    termsAccepted = true
-                    screen = AppScreen.Setup
-                },
-                onConfirmSetup = {
-                    selectedRole?.let { role ->
-                        setupMessage = null
-                        lifecycleScope.launch {
-                            profileClient.saveProfile(email, fullName, phone, role)
-                                .onSuccess { screen = AppScreen.SetupComplete }
-                                .onFailure { setupMessage = it.message ?: "Could not save profile." }
-                        }
-                    }
-                },
-            )
+                }
+            }
         }
+
+        checkExistingSession()
         handleOAuthIntent(intent)
     }
 
@@ -213,100 +229,268 @@ class MainActivity : ComponentActivity() {
         handleOAuthIntent(intent)
     }
 
+    private fun checkExistingSession() {
+        lifecycleScope.launch {
+            val token = authClient.accessToken()
+            if (token.isNullOrBlank()) {
+                screen = AppScreen.Login
+                return@launch
+            }
+
+            profileClient.fetchMyProfile()
+                .onSuccess { profile ->
+                    if (profile != null) {
+                        fullName = profile.fullName
+                        email = profile.email
+                        phone = profile.phone
+                        selectedRole = profile.role.replaceFirstChar { it.uppercase() }
+
+                        if (profile.setupCompletedAt != null) {
+                            if (profile.role.equals("caregiver", ignoreCase = true)) {
+                                screen = AppScreen.CaregiverDashboard
+                                refreshCaregiverData()
+                            } else {
+                                screen = AppScreen.BeneficiaryDashboard
+                                refreshBeneficiaryData()
+                            }
+                        } else if (profile.role.isNotBlank()) {
+                            screen = AppScreen.Setup
+                        } else {
+                            screen = AppScreen.RoleSelection
+                        }
+                    } else {
+                        screen = AppScreen.RoleSelection
+                    }
+                }
+                .onFailure {
+                    screen = AppScreen.Login
+                }
+        }
+    }
+
     private fun handleOAuthIntent(intent: Intent?) {
         val callback = intent?.data ?: return
         if (callback.scheme != "soundguard" || callback.host != "auth") return
         lifecycleScope.launch {
             authClient.handleGoogleCallback(callback)
                 .onSuccess {
-                    screen = AppScreen.RoleSelection
-                    authMessage = null
+                    checkExistingSession()
                 }
                 .onFailure { authMessage = it.message ?: "Google sign-in failed." }
         }
     }
-}
 
-@Composable
-private fun SoundGuardApp(
-    screen: AppScreen,
-    role: String?,
-                onRoleSelected: (String) -> Unit,
-    onGoogleLogin: () -> Unit,
-    email: String,
-    otp: String,
-    otpSent: Boolean,
-    otpCooldownSeconds: Int,
-    authBusy: Boolean,
-    authMessage: String?,
-    onEmailChange: (String) -> Unit,
-    onOtpChange: (String) -> Unit,
-    onSendOtp: () -> Unit,
-    onVerifyOtp: () -> Unit,
-    fullName: String,
-    phone: String,
-    consent: Boolean,
-    termsAccepted: Boolean,
-    microphoneGranted: Boolean,
-    notificationsGranted: Boolean,
-    cameraReady: Boolean,
-    setupMessage: String?,
-    onFullNameChange: (String) -> Unit,
-    onPhoneChange: (String) -> Unit,
-    onConsentChange: (Boolean) -> Unit,
-    onTermsChange: (Boolean) -> Unit,
-    onOpenTerms: () -> Unit,
-    onRequestPermissions: () -> Unit,
-    onCameraTest: () -> Unit,
-    onSetupBack: () -> Unit,
-    onCameraBack: () -> Unit,
-    onCameraFinished: () -> Unit,
-    onTermsBack: () -> Unit,
-    onTermsAccepted: () -> Unit,
-    onConfirmSetup: () -> Unit,
-) {
-    MaterialTheme {
-        Surface(modifier = Modifier.fillMaxSize()) {
-            when (screen) {
-                AppScreen.Login -> LoginScreen(
-                    email = email,
-                    otp = otp,
-                    otpSent = otpSent,
-                    otpCooldownSeconds = otpCooldownSeconds,
-                    busy = authBusy,
-                    message = authMessage,
-                    onEmailChange = onEmailChange,
-                    onOtpChange = onOtpChange,
-                    onSendOtp = onSendOtp,
-                    onVerifyOtp = onVerifyOtp,
-                    onGoogleLogin = onGoogleLogin,
-                )
-                AppScreen.RoleSelection -> RoleSelection(onRoleSelected)
-                AppScreen.Setup -> SetupScreen(
-                    role = role,
-                    fullName = fullName,
-                    phone = phone,
-                    consent = consent,
-                    termsAccepted = termsAccepted,
-                    microphoneGranted = microphoneGranted,
-                    notificationsGranted = notificationsGranted,
-                    cameraReady = cameraReady,
-                    setupMessage = setupMessage,
-                    onFullNameChange = onFullNameChange,
-                    onPhoneChange = onPhoneChange,
-                    onConsentChange = onConsentChange,
-                    onTermsChange = onTermsChange,
-                    onOpenTerms = onOpenTerms,
-                    onRequestPermissions = onRequestPermissions,
-                    onCameraTest = onCameraTest,
-                    onBack = onSetupBack,
-                    onConfirm = onConfirmSetup,
-                )
-                AppScreen.CameraTest -> CameraTestScreen(onCameraBack, onCameraFinished)
-                AppScreen.Terms -> TermsScreen(onTermsBack, onTermsAccepted)
-                AppScreen.SetupComplete -> SetupCompleteScreen(setupMessage)
+    private fun sendOtp() {
+        if (!Validation.isEmailValid(email)) {
+            authMessage = "Enter a valid email address."
+            return
+        }
+        authBusy = true
+        authMessage = null
+        lifecycleScope.launch {
+            authClient.sendOtp(email)
+                .onSuccess {
+                    otpSent = true
+                    authMessage = "Check your email for the one-time code."
+                    lifecycleScope.launch {
+                        for (seconds in 60 downTo 1) {
+                            otpCooldownSeconds = seconds
+                            delay(1_000)
+                        }
+                        otpCooldownSeconds = 0
+                    }
+                }
+                .onFailure {
+                    val detail = it.message.orEmpty()
+                    authMessage = if (detail.contains("rate", ignoreCase = true)) {
+                        "Email rate limit reached. Wait before requesting another code."
+                    } else {
+                        detail.ifBlank { "Could not send OTP." }
+                    }
+                }
+            authBusy = false
+        }
+    }
+
+    private fun verifyOtp() {
+        if (otp.trim().length < 6) {
+            authMessage = "Enter the verification code from your email."
+            return
+        }
+        authBusy = true
+        authMessage = null
+        lifecycleScope.launch {
+            authClient.verifyOtp(email, otp)
+                .onSuccess {
+                    checkExistingSession()
+                }
+                .onFailure { authMessage = it.message ?: "Could not verify OTP." }
+            authBusy = false
+        }
+    }
+
+    private fun confirmSetup() {
+        selectedRole?.let { role ->
+            setupMessage = null
+            lifecycleScope.launch {
+                profileClient.saveProfile(email, fullName, phone, role)
+                    .onSuccess {
+                        if (role.equals("caregiver", ignoreCase = true)) {
+                            screen = AppScreen.CaregiverDashboard
+                            refreshCaregiverData()
+                        } else {
+                            screen = AppScreen.BeneficiaryDashboard
+                            refreshBeneficiaryData()
+                        }
+                    }
+                    .onFailure { setupMessage = it.message ?: "Could not save profile." }
             }
         }
+    }
+
+    private fun requestAppPermissions() {
+        val permissions = buildList {
+            add(Manifest.permission.RECORD_AUDIO)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        setupPermissions.launch(permissions.toTypedArray())
+    }
+
+    private fun refreshBeneficiaryData() {
+        dashboardLoading = true
+        dashboardMessage = null
+        lifecycleScope.launch {
+            careClient.fetchCaregiversForBeneficiary()
+                .onSuccess { list ->
+                    connectedCaregivers = list
+                }
+                .onFailure { err ->
+                    dashboardMessage = err.message
+                }
+            dashboardLoading = false
+        }
+    }
+
+    private fun refreshCaregiverData() {
+        dashboardLoading = true
+        dashboardMessage = null
+        lifecycleScope.launch {
+            careClient.fetchBeneficiariesForCaregiver()
+                .onSuccess { list ->
+                    monitoredBeneficiaries = list
+                }
+                .onFailure { err ->
+                    dashboardMessage = err.message
+                }
+            dashboardLoading = false
+        }
+    }
+
+    private fun generatePairingCode() {
+        dashboardLoading = true
+        dashboardMessage = null
+        lifecycleScope.launch {
+            careClient.createPairingCode()
+                .onSuccess { code ->
+                    generatedPairingCode = code
+                }
+                .onFailure { err ->
+                    dashboardMessage = err.message ?: "Failed to create pairing code."
+                }
+            dashboardLoading = false
+        }
+    }
+
+    private fun pairBeneficiary(code: String) {
+        dashboardLoading = true
+        dashboardMessage = null
+        lifecycleScope.launch {
+            careClient.acceptPairingCode(code)
+                .onSuccess { beneficiaryName ->
+                    Toast.makeText(this@MainActivity, "Connected to $beneficiaryName!", Toast.LENGTH_SHORT).show()
+                    refreshCaregiverData()
+                }
+                .onFailure { err ->
+                    dashboardMessage = err.message ?: "Failed to pair with code."
+                }
+            dashboardLoading = false
+        }
+    }
+
+    private fun setPrimaryCaregiver(connectionId: String, caregiverId: String) {
+        val userId = authClient.userId() ?: return
+        dashboardLoading = true
+        lifecycleScope.launch {
+            careClient.setPrimaryCaregiver(userId, connectionId)
+                .onSuccess { refreshBeneficiaryData() }
+                .onFailure { dashboardMessage = it.message }
+            dashboardLoading = false
+        }
+    }
+
+    private fun removeCaregiver(connectionId: String) {
+        dashboardLoading = true
+        lifecycleScope.launch {
+            careClient.removeCareConnection(connectionId)
+                .onSuccess { refreshBeneficiaryData() }
+                .onFailure { dashboardMessage = it.message }
+            dashboardLoading = false
+        }
+    }
+
+    private fun removeBeneficiary(connectionId: String) {
+        dashboardLoading = true
+        lifecycleScope.launch {
+            careClient.removeCareConnection(connectionId)
+                .onSuccess { refreshCaregiverData() }
+                .onFailure { dashboardMessage = it.message }
+            dashboardLoading = false
+        }
+    }
+
+    private fun callPhoneNumber(targetPhone: String) {
+        if (targetPhone.isBlank()) {
+            Toast.makeText(this, "No phone number available.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${targetPhone.trim()}"))
+        startActivity(dialIntent)
+    }
+
+    private fun copyToClipboard(text: String) {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("SoundGuard Pairing Code", text)
+        clipboard.setPrimaryClip(clip)
+        Toast.makeText(this, "Pairing code copied to clipboard!", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun signOut() {
+        authClient.signOut()
+        screen = AppScreen.Login
+        email = ""
+        otp = ""
+        fullName = ""
+        phone = ""
+        selectedRole = null
+        connectedCaregivers = emptyList()
+        monitoredBeneficiaries = emptyList()
+        generatedPairingCode = null
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// UI SCREENS
+// -------------------------------------------------------------------------------------------------
+
+@Composable
+private fun LoadingScreen() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
+        CircularProgressIndicator()
     }
 }
 
@@ -325,25 +509,85 @@ private fun LoginScreen(
     onGoogleLogin: () -> Unit,
 ) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("SoundGuard", style = MaterialTheme.typography.headlineLarge)
-        Text("Sign in securely with Google", modifier = Modifier.padding(top = 8.dp))
-        Spacer(Modifier.height(24.dp))
-        Button(onClick = onGoogleLogin, enabled = !busy) {
-            Text("Continue with Google")
-        }
+        Text("SoundGuard", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
         Text(
-            "Your Google account identifies your SoundGuard account. No password or OTP is stored by SoundGuard.",
-            modifier = Modifier.padding(top = 16.dp),
+            "Privacy-first sound monitoring & caregiver alerts",
             style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
         )
+
+        Spacer(Modifier.height(36.dp))
+
+        Button(
+            onClick = onGoogleLogin,
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+        ) {
+            Text("Continue with Google", fontSize = 16.sp)
+        }
+
+        Spacer(Modifier.height(24.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HorizontalDivider(Modifier.weight(1f))
+            Text(" OR EMAIL OTP ", modifier = Modifier.padding(horizontal = 12.dp), style = MaterialTheme.typography.labelSmall)
+            HorizontalDivider(Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(20.dp))
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = onEmailChange,
+            label = { Text("Email address") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        Spacer(Modifier.height(12.dp))
+
+        if (otpSent) {
+            OutlinedTextField(
+                value = otp,
+                onValueChange = onOtpChange,
+                label = { Text("6-digit verification code") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onVerifyOtp,
+                enabled = !busy && otp.trim().isNotEmpty(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Verify Code & Sign In")
+            }
+        } else {
+            Button(
+                onClick = onSendOtp,
+                enabled = !busy && email.trim().isNotEmpty(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (otpCooldownSeconds > 0) "Resend in ${otpCooldownSeconds}s" else "Send OTP Code")
+            }
+        }
+
         message?.let {
+            Spacer(Modifier.height(16.dp))
             Text(
                 it,
-                modifier = Modifier.padding(top = 16.dp),
+                color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodyMedium,
+                textAlign = TextAlign.Center,
             )
         }
     }
@@ -352,25 +596,50 @@ private fun LoginScreen(
 @Composable
 private fun RoleSelection(onRoleSelected: (String) -> Unit) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("SoundGuard", style = MaterialTheme.typography.headlineLarge)
+        Text("Select Your Role", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(
-            "Privacy-first caregiver support",
-            modifier = Modifier.padding(top = 8.dp),
+            "How do you plan to use SoundGuard?",
+            modifier = Modifier.padding(top = 8.dp, bottom = 32.dp),
             style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(32.dp))
-        Text("Choose your role", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(16.dp))
-        Button(onClick = { onRoleSelected("Beneficiary") }) {
-            Text("I need monitoring")
+
+        Card(
+            onClick = { onRoleSelected("Beneficiary") },
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("🛡️ I Need Monitoring (Beneficiary)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "This device will monitor environmental sounds locally and alert my caregivers when assistance is needed.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
-        Spacer(Modifier.height(8.dp))
-        Button(onClick = { onRoleSelected("Caregiver") }) {
-            Text("I am a caregiver")
+
+        Spacer(Modifier.height(16.dp))
+
+        Card(
+            onClick = { onRoleSelected("Caregiver") },
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("❤️ I Am a Caregiver", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "I will link with family members or beneficiaries to receive instant alerts, view status timelines, and verify safety.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
         }
     }
 }
@@ -397,66 +666,80 @@ private fun SetupScreen(
     onConfirm: () -> Unit,
 ) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(24.dp)
+            .verticalScroll(rememberScrollState()),
     ) {
-        Button(onClick = onBack) {
-            Text("Back")
-        }
+        OutlinedButton(onClick = onBack) { Text("Back") }
         Spacer(Modifier.height(16.dp))
-        Text("${role ?: "User"} setup", style = MaterialTheme.typography.headlineMedium)
+
+        Text("${role ?: "User"} Setup", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(
-            "Setup will verify permissions and connections before monitoring is enabled.",
-            modifier = Modifier.padding(top = 12.dp),
+            "Complete profile information and verify safety permissions.",
+            modifier = Modifier.padding(top = 4.dp, bottom = 20.dp),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(24.dp))
+
         OutlinedTextField(
             value = fullName,
             onValueChange = onFullNameChange,
             label = { Text("Full name") },
             singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(12.dp))
         OutlinedTextField(
             value = phone,
             onValueChange = onPhoneChange,
-            label = { Text("Phone number") },
+            label = { Text("Emergency phone number") },
             singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
         )
         Text(
-            if (Validation.isPhoneValid(phone)) "Valid international phone number"
-            else "Use international format, for example +65 81234567",
-            modifier = Modifier.padding(top = 4.dp),
+            if (Validation.isPhoneValid(phone)) "✓ Valid international phone number"
+            else "Use international format (e.g. +65 81234567, +1 5551234567)",
+            modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
             style = MaterialTheme.typography.bodySmall,
+            color = if (Validation.isPhoneValid(phone)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
         if (role == "Beneficiary") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = consent, onCheckedChange = onConsentChange)
-                Text("I consent to SoundGuard monitoring and caregiver alerts")
+                Text("I consent to local audio monitoring & emergency alerts", style = MaterialTheme.typography.bodyMedium)
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Checkbox(checked = termsAccepted, onCheckedChange = onTermsChange)
-            Text("I agree to the Terms of Use")
+            Text("I agree to the Terms of Use", style = MaterialTheme.typography.bodyMedium)
         }
         TextButton(onClick = onOpenTerms) {
             Text("Read Terms of Use and camera privacy rules")
         }
+
         Spacer(Modifier.height(16.dp))
-        Text("Readiness checklist", style = MaterialTheme.typography.titleMedium)
-        Text(if (fullName.isNotBlank() && phone.isNotBlank()) "✓ Profile and phone number" else "○ Profile and phone number")
-        Text(if (role != "Beneficiary" || consent) "✓ Monitoring consent" else "○ Monitoring consent")
-        Text(if (microphoneGranted) "✓ Microphone permission" else "○ Microphone permission")
-        Text(if (notificationsGranted) "✓ Notification permission" else "○ Notification permission")
-        Text(if (cameraReady) "✓ Camera readiness" else "○ Camera readiness")
-        Spacer(Modifier.height(24.dp))
-        Button(onClick = onRequestPermissions) {
-            Text("Check microphone and notifications")
-        }
+        Text("Device Readiness Checklist", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
-        Button(onClick = onCameraTest) {
-            Text("Test camera")
-        }
+
+        ChecklistItem(isDone = fullName.isNotBlank() && phone.isNotBlank(), title = "Profile and Phone Number")
+        ChecklistItem(isDone = role != "Beneficiary" || consent, title = "Monitoring Consent")
+        ChecklistItem(isDone = microphoneGranted, title = "Microphone Permission")
+        ChecklistItem(isDone = notificationsGranted, title = "Notification Permission")
+        ChecklistItem(isDone = cameraReady, title = "Camera Readiness")
+
         Spacer(Modifier.height(16.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onRequestPermissions, modifier = Modifier.weight(1f)) {
+                Text("Permissions")
+            }
+            Button(onClick = onCameraTest, modifier = Modifier.weight(1f)) {
+                Text("Test Camera")
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
         val ready = fullName.isNotBlank() &&
             Validation.isPhoneValid(phone) &&
             termsAccepted &&
@@ -464,41 +747,27 @@ private fun SetupScreen(
             microphoneGranted &&
             notificationsGranted &&
             cameraReady
+
         Button(
             onClick = onConfirm,
             enabled = ready,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
         ) {
-            Text("Confirm setup")
+            Text("Complete Setup & Open Dashboard")
         }
-        if (!ready) {
-            Text(
-                "Complete the checklist and accept the Terms of Use before confirming.",
-                modifier = Modifier.padding(top = 8.dp),
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
+
         setupMessage?.let {
-            Text(
-                it,
-                modifier = Modifier.padding(top = 12.dp),
-                color = MaterialTheme.colorScheme.error,
-            )
+            Spacer(Modifier.height(12.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
 @Composable
-private fun SetupCompleteScreen(message: String?) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("Setup confirmed", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            message ?: "Your readiness checks passed and your profile was saved.",
-            modifier = Modifier.padding(top = 16.dp),
-        )
+private fun ChecklistItem(isDone: Boolean, title: String) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
+        Text(if (isDone) "✓ " else "○ ", color = if (isDone) MaterialTheme.colorScheme.primary else Color.Gray, fontWeight = FontWeight.Bold)
+        Text(title, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -507,45 +776,48 @@ private fun TermsScreen(onBack: () -> Unit, onAccept: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
     ) {
-        Button(onClick = onBack) { Text("Back") }
+        OutlinedButton(onClick = onBack) { Text("Back") }
         Spacer(Modifier.height(16.dp))
-        Text("Terms of Use", style = MaterialTheme.typography.headlineMedium)
+        Text("Terms of Use & Privacy", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(16.dp))
         Text(
-            "SoundGuard is a safety support prototype, not a medical device or emergency service. " +
+            "SoundGuard is a safety support prototype, not a medical device or certified emergency response system. " +
                 "It may miss sounds or produce false alerts. Keep the device powered, online, and positioned safely.",
+            style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(16.dp))
         Text(
-            "Camera privacy: I understand that my connected caregiver may request a verification photo " +
-                "during an active incident. A request is recorded, the camera indicator is shown, and photos " +
-                "are stored privately for no longer than 10 minutes. I can revoke this permission in Settings.",
+            "Camera privacy: Connected caregivers may request a verification snapshot during an active incident. " +
+                "Snapshots are access-controlled and automatically deleted after 10 minutes. You can revoke this in Settings.",
+            style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(16.dp))
         Text(
-            "SoundGuard does not automatically contact police or emergency services. If there is an emergency, " +
-                "the beneficiary or caregiver must contact the appropriate local service.",
+            "Emergency Notice: SoundGuard does not automatically contact police or ambulance services. " +
+                "If an emergency occurs, caregivers and beneficiaries must contact local emergency services.",
+            style = MaterialTheme.typography.bodyMedium,
         )
         Spacer(Modifier.height(24.dp))
-        Button(onClick = onAccept) {
-            Text("I understand and agree")
+        Button(onClick = onAccept, modifier = Modifier.fillMaxWidth()) {
+            Text("I Understand and Agree")
         }
     }
 }
 
 @Composable
 private fun CameraTestScreen(onBack: () -> Unit, onFinished: () -> Unit) {
-    var capturedPath by androidx.compose.runtime.remember { mutableStateOf<String?>(null) }
+    var capturedPath by remember { mutableStateOf<String?>(null) }
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Button(onClick = onBack) { Text("Back") }
+            OutlinedButton(onClick = onBack) { Text("Back") }
             Text(
-                "Camera readiness test",
+                "Camera Readiness Test",
                 modifier = Modifier.padding(start = 16.dp),
                 style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
             )
         }
         CameraPreview(
@@ -554,15 +826,416 @@ private fun CameraTestScreen(onBack: () -> Unit, onFinished: () -> Unit) {
         )
         if (capturedPath != null) {
             Text(
-                "Photo captured locally for testing",
-                modifier = Modifier.padding(horizontal = 24.dp),
+                "✓ Photo captured locally for verification",
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                color = MaterialTheme.colorScheme.primary,
             )
         }
         Button(
             onClick = onFinished,
-            modifier = Modifier.padding(24.dp).align(Alignment.CenterHorizontally),
+            modifier = Modifier.padding(24.dp).align(Alignment.CenterHorizontally).fillMaxWidth(),
         ) {
-            Text("Finish camera test")
+            Text("Finish Camera Test")
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// BENEFICIARY DASHBOARD
+// -------------------------------------------------------------------------------------------------
+
+@Composable
+private fun BeneficiaryDashboard(
+    fullName: String,
+    email: String,
+    isMonitoring: Boolean,
+    onToggleMonitoring: () -> Unit,
+    caregivers: List<CaregiverMember>,
+    pairingCode: String?,
+    loading: Boolean,
+    message: String?,
+    onGenerateCode: () -> Unit,
+    onCopyCode: (String) -> Unit,
+    onSetPrimary: (String, String) -> Unit,
+    onRemoveCaregiver: (String) -> Unit,
+    onCall: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    LaunchedEffect(Unit) {
+        onRefresh()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        // Header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text(fullName.ifBlank { "Beneficiary" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Role: Beneficiary", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            OutlinedButton(onClick = onSignOut) {
+                Text("Sign Out")
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Monitoring Status Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = if (isMonitoring) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+            ),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column {
+                        Text(
+                            if (isMonitoring) "🟢 Active Monitoring" else "⏸️ Monitoring Paused",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            if (isMonitoring) "Listening for alarms & emergency sounds" else "Ready to monitor environmental sounds",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Button(
+                        onClick = onToggleMonitoring,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isMonitoring) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        ),
+                    ) {
+                        Text(if (isMonitoring) "Stop" else "Start")
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        // Caregiver Team Card
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Caregiver Team (${caregivers.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    TextButton(onClick = onRefresh) { Text("Refresh") }
+                }
+
+                if (caregivers.isEmpty()) {
+                    Text(
+                        "No caregivers linked yet. Generate a pairing code below to invite a family member or caregiver.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                } else {
+                    caregivers.forEach { caregiver ->
+                        Spacer(Modifier.height(8.dp))
+                        CaregiverRow(
+                            caregiver = caregiver,
+                            onSetPrimary = { onSetPrimary(caregiver.connectionId, caregiver.caregiverId) },
+                            onRemove = { onRemoveCaregiver(caregiver.connectionId) },
+                            onCall = { onCall(caregiver.phone) },
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        // Pairing Code Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        ) {
+            Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Invite Caregiver", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "Generate a 6-character code for your caregiver to connect from their app.",
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                )
+
+                if (pairingCode != null) {
+                    Box(
+                        modifier = Modifier
+                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
+                            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 24.dp, vertical = 12.dp),
+                    ) {
+                        Text(
+                            pairingCode,
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            letterSpacing = 6.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { onCopyCode(pairingCode) }) {
+                            Text("Copy Code")
+                        }
+                        OutlinedButton(onClick = onGenerateCode) {
+                            Text("Generate New")
+                        }
+                    }
+                    Text("Code expires in 24 hours.", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(top = 6.dp))
+                } else {
+                    Button(onClick = onGenerateCode, enabled = !loading) {
+                        Text("Generate Pairing Code")
+                    }
+                }
+            }
+        }
+
+        if (loading) {
+            Spacer(Modifier.height(16.dp))
+            CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally).size(24.dp))
+        }
+
+        message?.let {
+            Spacer(Modifier.height(12.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun CaregiverRow(
+    caregiver: CaregiverMember,
+    onSetPrimary: () -> Unit,
+    onRemove: () -> Unit,
+    onCall: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(caregiver.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                    Text(caregiver.phone.ifBlank { caregiver.email }, style = MaterialTheme.typography.bodySmall)
+                }
+                if (caregiver.isPrimary) {
+                    Text("⭐ Primary", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                } else {
+                    Text("#${caregiver.escalationOrder} Backup", color = Color.Gray, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                if (caregiver.phone.isNotBlank()) {
+                    OutlinedButton(onClick = onCall, modifier = Modifier.padding(end = 6.dp)) {
+                        Text("📞 Call")
+                    }
+                }
+                if (!caregiver.isPrimary) {
+                    TextButton(onClick = onSetPrimary) {
+                        Text("Make Primary")
+                    }
+                }
+                TextButton(onClick = onRemove) {
+                    Text("Remove", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// CAREGIVER DASHBOARD
+// -------------------------------------------------------------------------------------------------
+
+@Composable
+private fun CaregiverDashboard(
+    fullName: String,
+    email: String,
+    beneficiaries: List<MonitoredBeneficiary>,
+    loading: Boolean,
+    message: String?,
+    onConnectBeneficiary: (String) -> Unit,
+    onRemoveBeneficiary: (String) -> Unit,
+    onCall: (String) -> Unit,
+    onRefresh: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    var codeInput by remember { mutableStateOf("") }
+
+    LaunchedEffect(Unit) {
+        onRefresh()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        // Header
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column {
+                Text(fullName.ifBlank { "Caregiver" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Role: Caregiver", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
+            }
+            OutlinedButton(onClick = onSignOut) {
+                Text("Sign Out")
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Connect Beneficiary Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Connect to Beneficiary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "Enter the 6-character code displayed on the beneficiary's device.",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    OutlinedTextField(
+                        value = codeInput,
+                        onValueChange = { if (it.length <= 6) codeInput = it.uppercase() },
+                        label = { Text("6-Character Code") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Button(
+                        onClick = {
+                            if (codeInput.length == 6) {
+                                onConnectBeneficiary(codeInput)
+                                codeInput = ""
+                            }
+                        },
+                        enabled = !loading && codeInput.length == 6,
+                        modifier = Modifier.height(56.dp),
+                    ) {
+                        Text("Connect")
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        // Beneficiaries List
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Monitored Beneficiaries (${beneficiaries.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    TextButton(onClick = onRefresh) { Text("Refresh") }
+                }
+
+                if (beneficiaries.isEmpty()) {
+                    Text(
+                        "You have not connected to any beneficiaries yet. Enter a pairing code above to begin monitoring.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp),
+                    )
+                } else {
+                    beneficiaries.forEach { beneficiary ->
+                        Spacer(Modifier.height(8.dp))
+                        BeneficiaryRow(
+                            beneficiary = beneficiary,
+                            onRemove = { onRemoveBeneficiary(beneficiary.connectionId) },
+                            onCall = { onCall(beneficiary.phone) },
+                        )
+                    }
+                }
+            }
+        }
+
+        if (loading) {
+            Spacer(Modifier.height(16.dp))
+            CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally).size(24.dp))
+        }
+
+        message?.let {
+            Spacer(Modifier.height(12.dp))
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+@Composable
+private fun BeneficiaryRow(
+    beneficiary: MonitoredBeneficiary,
+    onRemove: () -> Unit,
+    onCall: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column {
+                    Text(beneficiary.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                    Text(beneficiary.phone.ifBlank { beneficiary.email }, style = MaterialTheme.typography.bodySmall)
+                }
+                if (beneficiary.isPrimary) {
+                    Text("⭐ Primary Caregiver", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                if (beneficiary.phone.isNotBlank()) {
+                    OutlinedButton(onClick = onCall, modifier = Modifier.padding(end = 6.dp)) {
+                        Text("📞 Call")
+                    }
+                }
+                TextButton(onClick = onRemove) {
+                    Text("Remove", color = MaterialTheme.colorScheme.error)
+                }
+            }
         }
     }
 }
