@@ -1,0 +1,21 @@
+# Android / Gradle
+.gradle/
+build/
+*/build/
+.idea/
+.kotlin/
+*.iml
+local.properties
+
+# Firebase configuration
+google-services.json
+
+# Local secrets
+.env
+.env.local
+*.keystore
+*.jks
+
+# Model artifacts
+model/*.tflite
+model/*.onnx
