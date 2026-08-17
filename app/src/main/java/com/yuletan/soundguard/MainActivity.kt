@@ -1853,8 +1853,14 @@ private fun CaregiverDashboard(
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("Incident ${notification.incidentId.take(8)}", fontWeight = FontWeight.Bold)
-                                Text("${notification.status} • ${notification.createdAt}", style = MaterialTheme.typography.bodySmall)
+                                Text(
+                                    notification.soundLabel.ifBlank { "Incident ${notification.incidentId.take(8)}" },
+                                    fontWeight = FontWeight.Bold,
+                                )
+                                Text(
+                                    "${notification.severity.ifBlank { "alert" }} • ${(notification.confidence * 100).toInt()}% • ${notification.status}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
                             }
                             if (notification.status != "acknowledged") {
                                 TextButton(onClick = { onAcknowledgeNotification(notification.id) }) { Text("Acknowledge") }
