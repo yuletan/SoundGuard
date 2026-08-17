@@ -133,6 +133,10 @@ create policy "users can view their profile"
     on public.profiles for select
     using (id = auth.uid());
 
+create policy "users can insert their profile"
+    on public.profiles for insert
+    with check (id = auth.uid());
+
 create policy "users can update their profile"
     on public.profiles for update
     using (id = auth.uid())

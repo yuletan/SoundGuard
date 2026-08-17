@@ -230,6 +230,18 @@ class CareClient(context: Context) {
         }
     }
 
+    suspend fun countActiveConnections(): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.accessToken() ?: error("Session expired.")
+            val userId = authClient.userId() ?: error("No user found.")
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
+                "/rest/v1/care_connections?or=(beneficiary_id.eq.$userId,caregiver_id.eq.$userId)&status=eq.active&select=id"
+            val raw = executeGet(endpoint, token)
+            val array = JSONArray(raw)
+            array.length()
+        }
+    }
+
     private fun fetchProfilesByIds(ids: List<String>, token: String): Map<String, JSONObject> {
         if (ids.isEmpty()) return emptyMap()
         val inFilter = "in.(" + ids.joinToString(",") + ")"
@@ -266,12 +278,13 @@ class CareClient(context: Context) {
 
     private fun executePatch(endpoint: String, body: JSONObject, token: String) {
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-            requestMethod = "PATCH"
+            requestMethod = "POST"
             connectTimeout = 15_000
             readTimeout = 20_000
             setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
             setRequestProperty("Authorization", "Bearer $token")
             setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("X-HTTP-Method-Override", "PATCH")
             doOutput = true
         }
         try {

@@ -15,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,8 +28,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -36,6 +39,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -54,6 +58,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -70,6 +75,7 @@ private enum class AppScreen {
     Terms,
     BeneficiaryDashboard,
     CaregiverDashboard,
+    Settings,
 }
 
 class MainActivity : ComponentActivity() {
@@ -97,6 +103,11 @@ class MainActivity : ComponentActivity() {
     private var dashboardLoading by mutableStateOf(false)
     private var dashboardMessage by mutableStateOf<String?>(null)
     private var isMonitoringActive by mutableStateOf(false)
+
+    // Role Switch Dialog States
+    private var showBlockedSwitchDialog by mutableStateOf(false)
+    private var blockedActiveConnectionsCount by mutableStateOf(0)
+    private var showConfirmSwitchDialog by mutableStateOf(false)
 
     private val authClient by lazy { AuthClient(this) }
     private val profileClient by lazy { ProfileClient(this) }
@@ -179,7 +190,13 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                         AppScreen.Terms -> TermsScreen(
-                            onBack = { screen = AppScreen.Setup },
+                            onBack = {
+                                screen = if (selectedRole != null && connectedCaregivers.isNotEmpty()) {
+                                    AppScreen.Settings
+                                } else {
+                                    AppScreen.Setup
+                                }
+                            },
                             onAccept = {
                                 termsAccepted = true
                                 screen = AppScreen.Setup
@@ -199,8 +216,8 @@ class MainActivity : ComponentActivity() {
                             onSetPrimary = { connectionId, caregiverId -> setPrimaryCaregiver(connectionId, caregiverId) },
                             onRemoveCaregiver = { connectionId -> removeCaregiver(connectionId) },
                             onCall = { targetPhone -> callPhoneNumber(targetPhone) },
+                            onOpenSettings = { screen = AppScreen.Settings },
                             onRefresh = { refreshBeneficiaryData() },
-                            onSignOut = { signOut() },
                         )
                         AppScreen.CaregiverDashboard -> CaregiverDashboard(
                             fullName = fullName,
@@ -211,8 +228,79 @@ class MainActivity : ComponentActivity() {
                             onConnectBeneficiary = { code -> pairBeneficiary(code) },
                             onRemoveBeneficiary = { connectionId -> removeBeneficiary(connectionId) },
                             onCall = { targetPhone -> callPhoneNumber(targetPhone) },
+                            onOpenSettings = { screen = AppScreen.Settings },
                             onRefresh = { refreshCaregiverData() },
+                        )
+                        AppScreen.Settings -> SettingsScreen(
+                            fullName = fullName,
+                            email = email,
+                            phone = phone,
+                            currentRole = selectedRole ?: "User",
+                            microphoneGranted = microphoneGranted,
+                            notificationsGranted = notificationsGranted,
+                            onFullNameChange = { fullName = it },
+                            onPhoneChange = { phone = it },
+                            onSaveProfile = { updateProfile() },
+                            onRequestSwitchRole = { handleRoleSwitchRequest() },
+                            onOpenTerms = { screen = AppScreen.Terms },
+                            onCameraTest = { cameraPermission.launch(Manifest.permission.CAMERA) },
+                            onBack = {
+                                screen = if (selectedRole.equals("caregiver", ignoreCase = true)) {
+                                    AppScreen.CaregiverDashboard
+                                } else {
+                                    AppScreen.BeneficiaryDashboard
+                                }
+                            },
                             onSignOut = { signOut() },
+                        )
+                    }
+
+                    // Blocked Role Switch Dialog
+                    if (showBlockedSwitchDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showBlockedSwitchDialog = false },
+                            title = { Text("⚠️ Cannot Switch Role") },
+                            text = {
+                                Text(
+                                    "You currently have $blockedActiveConnectionsCount active care connection(s). " +
+                                        "To protect ongoing safety monitoring, you must remove all connections before switching your account role.",
+                                )
+                            },
+                            confirmButton = {
+                                Button(onClick = { showBlockedSwitchDialog = false }) {
+                                    Text("Got It")
+                                }
+                            },
+                        )
+                    }
+
+                    // Confirm Role Switch Dialog
+                    if (showConfirmSwitchDialog) {
+                        val targetRole = if (selectedRole.equals("caregiver", ignoreCase = true)) "Beneficiary" else "Caregiver"
+                        AlertDialog(
+                            onDismissRequest = { showConfirmSwitchDialog = false },
+                            title = { Text("Switch Role to $targetRole?") },
+                            text = {
+                                Text(
+                                    "Your current role will be changed to $targetRole. You will be redirected to complete the readiness setup for this role.",
+                                )
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        showConfirmSwitchDialog = false
+                                        executeRoleSwitch()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                ) {
+                                    Text("Yes, Switch Role")
+                                }
+                            },
+                            dismissButton = {
+                                OutlinedButton(onClick = { showConfirmSwitchDialog = false }) {
+                                    Text("Cancel")
+                                }
+                            },
                         )
                     }
                 }
@@ -345,6 +433,60 @@ class MainActivity : ComponentActivity() {
                     }
                     .onFailure { setupMessage = it.message ?: "Could not save profile." }
             }
+        }
+    }
+
+    private fun updateProfile() {
+        if (!Validation.isPhoneValid(phone)) {
+            Toast.makeText(this, "Enter a valid international phone number.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        selectedRole?.let { role ->
+            lifecycleScope.launch {
+                profileClient.saveProfile(email, fullName, phone, role)
+                    .onSuccess {
+                        Toast.makeText(this@MainActivity, "Profile updated successfully!", Toast.LENGTH_SHORT).show()
+                    }
+                    .onFailure {
+                        Toast.makeText(this@MainActivity, "Failed: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+            }
+        }
+    }
+
+    private fun handleRoleSwitchRequest() {
+        dashboardLoading = true
+        lifecycleScope.launch {
+            careClient.countActiveConnections()
+                .onSuccess { activeCount ->
+                    dashboardLoading = false
+                    if (activeCount > 0) {
+                        blockedActiveConnectionsCount = activeCount
+                        showBlockedSwitchDialog = true
+                    } else {
+                        showConfirmSwitchDialog = true
+                    }
+                }
+                .onFailure {
+                    dashboardLoading = false
+                    showConfirmSwitchDialog = true
+                }
+        }
+    }
+
+    private fun executeRoleSwitch() {
+        lifecycleScope.launch {
+            profileClient.resetRole()
+                .onSuccess {
+                    selectedRole = null
+                    screen = AppScreen.RoleSelection
+                    Toast.makeText(this@MainActivity, "Role reset. Please select your new role.", Toast.LENGTH_SHORT).show()
+                }
+                .onFailure {
+                    // Even if network reset fails, allow local role switch to unblock UI
+                    selectedRole = null
+                    screen = AppScreen.RoleSelection
+                }
         }
     }
 
@@ -495,6 +637,67 @@ private fun LoadingScreen() {
 }
 
 @Composable
+private fun HomeTopBar(
+    title: String,
+    roleSubtitle: String,
+    onOpenSettings: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("🛡️", fontSize = 22.sp)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    roleSubtitle,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = onRefresh,
+                modifier = Modifier.padding(end = 6.dp),
+                contentPadding = ButtonDefaults.ContentPadding,
+            ) {
+                Text("🔄 Refresh", fontSize = 13.sp)
+            }
+            Button(
+                onClick = onOpenSettings,
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                contentPadding = ButtonDefaults.ContentPadding,
+            ) {
+                Text("⚙️ Settings", fontSize = 13.sp)
+            }
+        }
+    }
+}
+
+@Composable
 private fun LoginScreen(
     email: String,
     otp: String,
@@ -516,7 +719,7 @@ private fun LoginScreen(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("SoundGuard", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
+        Text("🛡️ SoundGuard", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
         Text(
             "Privacy-first sound monitoring & caregiver alerts",
             style = MaterialTheme.typography.bodyMedium,
@@ -602,7 +805,7 @@ private fun RoleSelection(onRoleSelected: (String) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Text("Select Your Role", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("🛡️ Select Your Role", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(
             "How do you plan to use SoundGuard?",
             modifier = Modifier.padding(top = 8.dp, bottom = 32.dp),
@@ -671,7 +874,9 @@ private fun SetupScreen(
             .padding(24.dp)
             .verticalScroll(rememberScrollState()),
     ) {
-        OutlinedButton(onClick = onBack) { Text("Back") }
+        OutlinedButton(onClick = onBack) {
+            Text("← Change Role / Back")
+        }
         Spacer(Modifier.height(16.dp))
 
         Text("${role ?: "User"} Setup", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
@@ -859,8 +1064,8 @@ private fun BeneficiaryDashboard(
     onSetPrimary: (String, String) -> Unit,
     onRemoveCaregiver: (String) -> Unit,
     onCall: (String) -> Unit,
+    onOpenSettings: () -> Unit,
     onRefresh: () -> Unit,
-    onSignOut: () -> Unit,
 ) {
     LaunchedEffect(Unit) {
         onRefresh()
@@ -872,22 +1077,12 @@ private fun BeneficiaryDashboard(
             .padding(16.dp)
             .verticalScroll(rememberScrollState()),
     ) {
-        // Header
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column {
-                Text(fullName.ifBlank { "Beneficiary" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text("Role: Beneficiary", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-            }
-            OutlinedButton(onClick = onSignOut) {
-                Text("Sign Out")
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
+        HomeTopBar(
+            title = fullName.ifBlank { "Beneficiary" },
+            roleSubtitle = "Beneficiary Mode",
+            onOpenSettings = onOpenSettings,
+            onRefresh = onRefresh,
+        )
 
         // Monitoring Status Card
         Card(
@@ -1083,8 +1278,8 @@ private fun CaregiverDashboard(
     onConnectBeneficiary: (String) -> Unit,
     onRemoveBeneficiary: (String) -> Unit,
     onCall: (String) -> Unit,
+    onOpenSettings: () -> Unit,
     onRefresh: () -> Unit,
-    onSignOut: () -> Unit,
 ) {
     var codeInput by remember { mutableStateOf("") }
 
@@ -1098,22 +1293,12 @@ private fun CaregiverDashboard(
             .padding(16.dp)
             .verticalScroll(rememberScrollState()),
     ) {
-        // Header
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column {
-                Text(fullName.ifBlank { "Caregiver" }, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text("Role: Caregiver", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
-            }
-            OutlinedButton(onClick = onSignOut) {
-                Text("Sign Out")
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
+        HomeTopBar(
+            title = fullName.ifBlank { "Caregiver" },
+            roleSubtitle = "Caregiver Mode",
+            onOpenSettings = onOpenSettings,
+            onRefresh = onRefresh,
+        )
 
         // Connect Beneficiary Card
         Card(
@@ -1237,5 +1422,149 @@ private fun BeneficiaryRow(
                 }
             }
         }
+    }
+}
+
+// -------------------------------------------------------------------------------------------------
+// SETTINGS SCREEN
+// -------------------------------------------------------------------------------------------------
+
+@Composable
+private fun SettingsScreen(
+    fullName: String,
+    email: String,
+    phone: String,
+    currentRole: String,
+    microphoneGranted: Boolean,
+    notificationsGranted: Boolean,
+    onFullNameChange: (String) -> Unit,
+    onPhoneChange: (String) -> Unit,
+    onSaveProfile: () -> Unit,
+    onRequestSwitchRole: () -> Unit,
+    onOpenTerms: () -> Unit,
+    onCameraTest: () -> Unit,
+    onBack: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(onClick = onBack) { Text("← Back") }
+            Spacer(Modifier.width(16.dp))
+            Text("Settings & Profile", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        // Profile Section
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Profile Information", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+
+                OutlinedTextField(
+                    value = fullName,
+                    onValueChange = onFullNameChange,
+                    label = { Text("Full Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    value = phone,
+                    onValueChange = onPhoneChange,
+                    label = { Text("Emergency Phone Number") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(6.dp))
+                Text("Signed in as: $email", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = onSaveProfile, modifier = Modifier.align(Alignment.End)) {
+                    Text("Save Changes")
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Account Role & Safeguards
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Account Role", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Current active role: $currentRole",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    "Switching roles is only allowed when you have 0 active connections to prevent leaving beneficiaries unprotected.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
+                )
+                val targetRole = if (currentRole.equals("caregiver", ignoreCase = true)) "Beneficiary" else "Caregiver"
+                Button(
+                    onClick = onRequestSwitchRole,
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                ) {
+                    Text("Switch Role to $targetRole", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Diagnostics & Readiness
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Device & Safety Permissions", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                ChecklistItem(isDone = microphoneGranted, title = "Microphone Permission (Audio Monitoring)")
+                ChecklistItem(isDone = notificationsGranted, title = "Push Notification Permission")
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onCameraTest, modifier = Modifier.weight(1f)) {
+                        Text("Test Camera")
+                    }
+                    OutlinedButton(onClick = onOpenTerms, modifier = Modifier.weight(1f)) {
+                        Text("Terms & Privacy")
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        // Sign Out
+        Button(
+            onClick = onSignOut,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+        ) {
+            Text("Sign Out of SoundGuard")
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Text(
+            "SoundGuard v0.3 • Hackathon Prototype",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+        )
     }
 }

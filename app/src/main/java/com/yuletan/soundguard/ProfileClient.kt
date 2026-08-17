@@ -106,4 +106,36 @@ class ProfileClient(context: Context) {
             }
         }
     }
+
+    suspend fun resetRole(): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.accessToken() ?: error("Your session has expired.")
+            val userId = authClient.userId() ?: error("No authenticated user was found.")
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/profiles?id=eq.$userId"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("X-HTTP-Method-Override", "PATCH")
+                doOutput = true
+            }
+            val body = JSONObject().apply {
+                put("role", JSONObject.NULL)
+                put("setup_completed_at", JSONObject.NULL)
+            }
+            try {
+                connection.outputStream.use { it.write(body.toString().toByteArray()) }
+                val responseCode = connection.responseCode
+                if (responseCode !in 200..299) {
+                    val response = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    error("Role reset failed with HTTP $responseCode: $response")
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
 }
