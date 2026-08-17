@@ -13,9 +13,9 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,7 +39,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -102,7 +103,6 @@ class MainActivity : ComponentActivity() {
     private var generatedPairingCode by mutableStateOf<String?>(null)
     private var dashboardLoading by mutableStateOf(false)
     private var dashboardMessage by mutableStateOf<String?>(null)
-    private var isMonitoringActive by mutableStateOf(false)
 
     // Role Switch Dialog States
     private var showBlockedSwitchDialog by mutableStateOf(false)
@@ -139,6 +139,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         setContent {
+            val liveAudioState by AudioMonitoringService.audioState.collectAsState()
+
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     when (screen) {
@@ -205,8 +207,24 @@ class MainActivity : ComponentActivity() {
                         AppScreen.BeneficiaryDashboard -> BeneficiaryDashboard(
                             fullName = fullName,
                             email = email,
-                            isMonitoring = isMonitoringActive,
-                            onToggleMonitoring = { isMonitoringActive = !isMonitoringActive },
+                            audioState = liveAudioState,
+                            onToggleMonitoring = {
+                                if (liveAudioState.isMonitoring) {
+                                    AudioMonitoringService.stop(this@MainActivity)
+                                } else {
+                                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                                        requestAppPermissions()
+                                    } else {
+                                        AudioMonitoringService.start(this@MainActivity)
+                                    }
+                                }
+                            },
+                            onSimulateSound = { category, label, confidence, isEmergency ->
+                                if (!liveAudioState.isMonitoring) {
+                                    AudioMonitoringService.start(this@MainActivity)
+                                }
+                                AudioMonitoringService.simulateSound(category, label, confidence, isEmergency)
+                            },
                             caregivers = connectedCaregivers,
                             pairingCode = generatedPairingCode,
                             loading = dashboardLoading,
@@ -483,7 +501,6 @@ class MainActivity : ComponentActivity() {
                     Toast.makeText(this@MainActivity, "Role reset. Please select your new role.", Toast.LENGTH_SHORT).show()
                 }
                 .onFailure {
-                    // Even if network reset fails, allow local role switch to unblock UI
                     selectedRole = null
                     screen = AppScreen.RoleSelection
                 }
@@ -609,6 +626,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun signOut() {
+        AudioMonitoringService.stop(this)
         authClient.signOut()
         screen = AppScreen.Login
         email = ""
@@ -1053,8 +1071,9 @@ private fun CameraTestScreen(onBack: () -> Unit, onFinished: () -> Unit) {
 private fun BeneficiaryDashboard(
     fullName: String,
     email: String,
-    isMonitoring: Boolean,
+    audioState: LiveAudioState,
     onToggleMonitoring: () -> Unit,
+    onSimulateSound: (category: String, label: String, confidence: Float, isEmergency: Boolean) -> Unit,
     caregivers: List<CaregiverMember>,
     pairingCode: String?,
     loading: Boolean,
@@ -1071,6 +1090,15 @@ private fun BeneficiaryDashboard(
         onRefresh()
     }
 
+    val statusCardColor by animateColorAsState(
+        targetValue = when {
+            audioState.isEmergency -> MaterialTheme.colorScheme.errorContainer
+            audioState.isMonitoring -> MaterialTheme.colorScheme.primaryContainer
+            else -> MaterialTheme.colorScheme.surfaceVariant
+        },
+        label = "status_color",
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1084,12 +1112,10 @@ private fun BeneficiaryDashboard(
             onRefresh = onRefresh,
         )
 
-        // Monitoring Status Card
+        // Live Monitoring Status Card
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = if (isMonitoring) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-            ),
+            colors = CardDefaults.cardColors(containerColor = statusCardColor),
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
@@ -1097,24 +1123,108 @@ private fun BeneficiaryDashboard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            if (isMonitoring) "🟢 Active Monitoring" else "⏸️ Monitoring Paused",
+                            when {
+                                audioState.isEmergency -> "🚨 EMERGENCY SOUND DETECTED"
+                                audioState.isMonitoring -> "🟢 Active Monitoring (Local YAMNet)"
+                                else -> "⏸️ Monitoring Paused"
+                            },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            if (isMonitoring) "Listening for alarms & emergency sounds" else "Ready to monitor environmental sounds",
+                            when {
+                                audioState.isEmergency -> "Alert event detected: ${audioState.displayLabel}"
+                                audioState.isMonitoring -> "Detected: ${audioState.displayLabel} (${(audioState.confidence * 100).toInt()}%)"
+                                else -> "Tap Start to begin continuous local sound monitoring"
+                            },
                             style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 2.dp),
                         )
                     }
                     Button(
                         onClick = onToggleMonitoring,
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isMonitoring) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                            containerColor = if (audioState.isMonitoring) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                         ),
                     ) {
-                        Text(if (isMonitoring) "Stop" else "Start")
+                        Text(if (audioState.isMonitoring) "Stop" else "Start")
+                    }
+                }
+
+                if (audioState.isMonitoring) {
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Live Mic Level:", style = MaterialTheme.typography.labelSmall)
+                        Text(
+                            "${(audioState.amplitude * 100).toInt()}%" + if (audioState.isSimulated) " (Simulated)" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (audioState.isEmergency) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    LinearProgressIndicator(
+                        progress = { audioState.amplitude },
+                        modifier = Modifier.fillMaxWidth().height(10.dp),
+                        color = if (audioState.isEmergency) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // Sound Testing & Model Simulator Card
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Sound Model Testing & Simulator", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "Test sound classification events directly on this device or emulator:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 2.dp, bottom = 10.dp),
+                )
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onSimulateSound("alarm", "Smoke Alarm (Simulated)", 0.94f, true) },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("🔥 Smoke Alarm", fontSize = 12.sp)
+                    }
+                    Button(
+                        onClick = { onSimulateSound("glass_break", "Glass Break (Simulated)", 0.91f, true) },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("💥 Glass Break", fontSize = 12.sp)
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { onSimulateSound("doorbell", "Doorbell / Knock", 0.85f, false) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("🔔 Doorbell", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = { onSimulateSound("background", "Normal Background", 0.96f, false) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("🍃 Normal Ambient", fontSize = 12.sp)
                     }
                 }
             }
@@ -1561,7 +1671,7 @@ private fun SettingsScreen(
 
         Spacer(Modifier.height(16.dp))
         Text(
-            "SoundGuard v0.3 • Hackathon Prototype",
+            "SoundGuard v0.4 • Hackathon Prototype",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.align(Alignment.CenterHorizontally),

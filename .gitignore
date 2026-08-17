@@ -17,5 +17,7 @@ google-services.json
 *.jks
 
 # Model artifacts
+*.tflite
+*.onnx
 model/*.tflite
 model/*.onnx

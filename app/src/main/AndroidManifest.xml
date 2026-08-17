@@ -29,5 +29,11 @@
                     android:path="/callback" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".AudioMonitoringService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
     </application>
 </manifest>
