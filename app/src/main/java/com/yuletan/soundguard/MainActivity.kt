@@ -1282,6 +1282,10 @@ private fun BeneficiaryDashboard(
 ) {
     LaunchedEffect(Unit) {
         onRefresh()
+        while (true) {
+            delay(15_000L)
+            onRefresh()
+        }
     }
 
     val statusCardColor by animateColorAsState(
@@ -1312,7 +1316,7 @@ private fun BeneficiaryDashboard(
                 if (sharedIncidents.isEmpty()) {
                     Text("No shared incidents yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
                 } else {
-                    sharedIncidents.take(10).forEach { incident ->
+                    sharedIncidents.forEach { incident ->
                         Text(
                             "${if (incident.severity == "high") "🚨" else "ℹ️"} ${incident.label} • ${(incident.confidence * 100).toInt()}% • ${incident.status}",
                             color = if (incident.severity == "high") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
