@@ -112,6 +112,7 @@ class MainActivity : ComponentActivity() {
 
     // Dashboard State
     private var connectedCaregivers by mutableStateOf<List<CaregiverMember>>(emptyList())
+    private var sharedIncidents by mutableStateOf<List<SharedIncident>>(emptyList())
     private var monitoredBeneficiaries by mutableStateOf<List<MonitoredBeneficiary>>(emptyList())
     private var caregiverNotifications by mutableStateOf<List<CaregiverNotification>>(emptyList())
     private var selectedNotification by mutableStateOf<CaregiverNotification?>(null)
@@ -269,7 +270,8 @@ class MainActivity : ComponentActivity() {
                                 }
                                 AudioMonitoringService.simulateSound(category, label, confidence, isEmergency)
                             },
-                            caregivers = connectedCaregivers,
+                             caregivers = connectedCaregivers,
+                             sharedIncidents = sharedIncidents,
                             pairingCode = generatedPairingCode,
                             loading = dashboardLoading,
                             message = dashboardMessage,
@@ -643,6 +645,8 @@ class MainActivity : ComponentActivity() {
                 .onFailure { err ->
                     dashboardMessage = err.message
                 }
+            IncidentClient(this@MainActivity).fetchOwnIncidents()
+                .onSuccess { list -> sharedIncidents = list }
             dashboardLoading = false
         }
     }
@@ -810,6 +814,7 @@ class MainActivity : ComponentActivity() {
         monitoringConsent = false
         termsAccepted = false
         connectedCaregivers = emptyList()
+        sharedIncidents = emptyList()
         monitoredBeneficiaries = emptyList()
         caregiverNotifications = emptyList()
         previewBeneficiary = null
@@ -1261,6 +1266,7 @@ private fun BeneficiaryDashboard(
     onToggleMonitoring: () -> Unit,
     onSimulateSound: (category: String, label: String, confidence: Float, isEmergency: Boolean) -> Unit,
     caregivers: List<CaregiverMember>,
+    sharedIncidents: List<SharedIncident>,
     pairingCode: String?,
     loading: Boolean,
     message: String?,
@@ -1287,7 +1293,7 @@ private fun BeneficiaryDashboard(
         label = "status_color",
     )
 
-    Column(
+        Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
@@ -1299,6 +1305,23 @@ private fun BeneficiaryDashboard(
             onOpenSettings = onOpenSettings,
             onRefresh = onRefresh,
         )
+
+        Card(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Shared caregiver chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                if (sharedIncidents.isEmpty()) {
+                    Text("No shared incidents yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                } else {
+                    sharedIncidents.take(10).forEach { incident ->
+                        Text(
+                            "${if (incident.severity == "high") "🚨" else "ℹ️"} ${incident.label} • ${(incident.confidence * 100).toInt()}% • ${incident.status}",
+                            color = if (incident.severity == "high") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                }
+            }
+        }
 
         // Live Monitoring Status Card
         Card(
@@ -1959,12 +1982,12 @@ private fun CaregiverDashboard(
             .padding(16.dp)
             .verticalScroll(rememberScrollState()),
     ) {
-        HomeTopBar(
+            HomeTopBar(
             title = fullName.ifBlank { "Caregiver" },
             roleSubtitle = "Caregiver Mode",
             onOpenSettings = onOpenSettings,
             onRefresh = onRefresh,
-        )
+            )
 
         // Connect Beneficiary Card
         Card(

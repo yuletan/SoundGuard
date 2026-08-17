@@ -10,6 +10,40 @@ import java.net.URL
 class IncidentClient(context: Context) {
     private val authClient = AuthClient(context)
 
+    suspend fun fetchOwnIncidents(): Result<List<SharedIncident>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.accessToken() ?: return@runCatching emptyList()
+            val userId = authClient.userId() ?: return@runCatching emptyList()
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
+                "/rest/v1/incidents?beneficiary_id=eq.$userId&select=id,sound_label,severity,confidence,status,started_at&order=started_at.desc&limit=50"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+            }
+            try {
+                val code = connection.responseCode
+                val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (code !in 200..299) error("Incident history failed with HTTP $code: $response")
+                val array = org.json.JSONArray(response)
+                (0 until array.length()).map { index ->
+                    val row = array.getJSONObject(index)
+                    SharedIncident(
+                        id = row.getString("id"),
+                        label = row.optString("sound_label", "Alert"),
+                        severity = row.optString("severity", "low"),
+                        confidence = row.optDouble("confidence", 0.0).toFloat(),
+                        status = row.optString("status", "detected"),
+                        startedAt = row.optString("started_at"),
+                    )
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
     suspend fun createIncident(event: AlertEvent): Result<String?> = withContext(Dispatchers.IO) {
         runCatching {
             val token = authClient.accessToken() ?: return@runCatching null
@@ -51,3 +85,12 @@ class IncidentClient(context: Context) {
         }
     }
 }
+
+data class SharedIncident(
+    val id: String,
+    val label: String,
+    val severity: String,
+    val confidence: Float,
+    val status: String,
+    val startedAt: String,
+)
