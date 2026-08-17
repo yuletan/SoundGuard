@@ -63,6 +63,7 @@ class AudioMonitoringService : Service() {
         private var lastRecordedCategory: String? = null
         private var lastRecordedAt: Long = 0L
         private val incidentEngine = IncidentStateMachine()
+        private var serviceInstance: AudioMonitoringService? = null
 
         private val _audioState = MutableStateFlow(LiveAudioState())
         val audioState: StateFlow<LiveAudioState> = _audioState.asStateFlow()
@@ -91,6 +92,7 @@ class AudioMonitoringService : Service() {
             val now = System.currentTimeMillis()
             val event = if (!isAmbient) AlertEvent(category, label, confidence, if (isEmergency) SoundSeverity.High else SoundSeverity.Low, now) else null
             val incident = event?.let { incidentEngine.detect(it.label, it.severity, it.confidence, now) }
+            event?.let { serviceInstance?.persistIncident(it) }
             _audioState.value = _audioState.value.copy(
                 soundCategory = category,
                 displayLabel = label,
@@ -116,6 +118,7 @@ class AudioMonitoringService : Service() {
         super.onCreate()
         createNotificationChannel()
         classifier = SoundClassifier(this)
+        serviceInstance = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -236,6 +239,11 @@ class AudioMonitoringService : Service() {
                         Log.d(TAG, "Candidates: ${classification.topCandidates.joinToString { "${it.category}=${String.format("%.3f", it.score)}" }}")
                     }
 
+                    val previousHistory = _audioState.value.alertHistory
+                    val updatedHistory = recordEvent(classification, previousHistory)
+                    if (updatedHistory.size > previousHistory.size) {
+                        persistIncident(updatedHistory.last())
+                    }
                     _audioState.value = _audioState.value.copy(
                         soundCategory = classification.category,
                         displayLabel = classification.displayLabel,
@@ -246,7 +254,7 @@ class AudioMonitoringService : Service() {
                         lastEmergencyTimestamp = if (classification.isEmergency) System.currentTimeMillis() else _audioState.value.lastEmergencyTimestamp,
                         lastEmergencyLabel = if (classification.isEmergency) classification.displayLabel else _audioState.value.lastEmergencyLabel,
                         lastEmergencyConfidence = if (classification.isEmergency) classification.confidence else _audioState.value.lastEmergencyConfidence,
-                        alertHistory = recordEvent(classification, _audioState.value.alertHistory),
+                        alertHistory = updatedHistory,
                         activeIncident = incidentEngine.detect(
                             classification.displayLabel,
                             classification.severity,
@@ -291,6 +299,13 @@ class AudioMonitoringService : Service() {
             severity = classification.severity,
             timestamp = now,
         )).takeLast(50)
+    }
+
+    private fun persistIncident(event: AlertEvent) {
+        serviceScope.launch {
+            IncidentClient(applicationContext).createIncident(event)
+                .onFailure { Log.w(TAG, "Could not persist incident: ${it.message}") }
+        }
     }
 
     private fun stopMonitoring() {
@@ -359,6 +374,7 @@ class AudioMonitoringService : Service() {
         super.onDestroy()
         stopMonitoring()
         serviceJob.cancel()
+        serviceInstance = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
