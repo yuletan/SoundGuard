@@ -1601,9 +1601,6 @@ private fun CaregiverRow(
                         Text("📞 Call")
                     }
                 }
-                OutlinedButton(onClick = onOpenChat, modifier = Modifier.padding(end = 6.dp)) {
-                    Text("Open Chat")
-                }
                 if (!caregiver.isPrimary) {
                     TextButton(onClick = onSetPrimary) {
                         Text("Make Primary")
@@ -1612,6 +1609,12 @@ private fun CaregiverRow(
                 TextButton(onClick = onRemove) {
                     Text("Remove", color = MaterialTheme.colorScheme.error)
                 }
+            }
+            OutlinedButton(
+                onClick = onOpenChat,
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) {
+                Text("Open Chat")
             }
         }
     }
