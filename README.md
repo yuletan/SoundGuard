@@ -133,3 +133,29 @@ Merge shared models and database contracts first. Audio monitoring and caregiver
 ## License
 
 To be defined.
+
+## Current hackathon demo additions
+
+The current Android debug demo also includes:
+
+- More sensitive YAMNet target prioritization so recognized sounds can take priority over louder background noise.
+- Alert thresholds tuned for distant or quieter glass-break events, including a `0.45` glass-break alert threshold.
+- In-memory alert history so different events such as glass break, alarm, doorbell, cough, crying, water, animal sounds, and thunder can appear as separate caregiver messages.
+- Low-severity monitoring messages for potentially useful context such as cough/sneeze/snore, water, animal sounds, thunder, crying, and door events.
+- A same-device Caregiver Admin Preview for demonstrating beneficiary-to-caregiver behavior without a second phone.
+- A WhatsApp-style beneficiary chat preview with message timestamps, alert acknowledgement, call action, camera-request approval/decline, and photo preview.
+
+### Demo-only limitations
+
+- The Admin Preview and demo caregiver link are local to the current app process; they do not create a real Supabase caregiver connection.
+- Demo verification photos are captured and displayed locally on the same device.
+- The real remote-camera flow still requires a backend request, beneficiary-device handling, private upload, and caregiver download/preview through Supabase.
+- Alert history is currently in memory and is cleared when the app process is terminated. Persistent incident history requires wiring the audio service to the `incidents` and `notifications` tables.
+
+### Suggested demo flow
+
+1. Open the beneficiary dashboard and link the Demo Caregiver.
+2. Open Caregiver Preview and trigger different simulator events from the beneficiary dashboard.
+3. Return to the caregiver chat to see separate timestamped alert messages.
+4. Request a verification photo, approve it, capture the image, and finish the camera screen.
+5. Review the captured photo and use the call recommendation for follow-up.

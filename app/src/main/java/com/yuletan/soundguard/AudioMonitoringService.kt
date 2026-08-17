@@ -27,6 +27,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlin.math.sqrt
 
+data class AlertEvent(
+    val category: String,
+    val label: String,
+    val confidence: Float,
+    val severity: SoundSeverity,
+    val timestamp: Long,
+)
+
 data class LiveAudioState(
     val isMonitoring: Boolean = false,
     val soundCategory: String = "background",
@@ -36,6 +44,10 @@ data class LiveAudioState(
     val isEmergency: Boolean = false,
     val isSimulated: Boolean = false,
     val lastEmergencyTimestamp: Long? = null,
+    val lastEmergencyLabel: String? = null,
+    val lastEmergencyConfidence: Float? = null,
+    val alertHistory: List<AlertEvent> = emptyList(),
+    val activeIncident: IncidentRecord? = null,
 )
 
 class AudioMonitoringService : Service() {
@@ -48,6 +60,9 @@ class AudioMonitoringService : Service() {
         const val ACTION_STOP = "com.yuletan.soundguard.action.STOP_MONITORING"
 
         private var simulatedUntil: Long = 0L
+        private var lastRecordedCategory: String? = null
+        private var lastRecordedAt: Long = 0L
+        private val incidentEngine = IncidentStateMachine()
 
         private val _audioState = MutableStateFlow(LiveAudioState())
         val audioState: StateFlow<LiveAudioState> = _audioState.asStateFlow()
@@ -73,13 +88,20 @@ class AudioMonitoringService : Service() {
         fun simulateSound(category: String, label: String, confidence: Float, isEmergency: Boolean) {
             val isAmbient = (category == "background")
             simulatedUntil = if (isAmbient) 0L else System.currentTimeMillis() + 8000L
+            val now = System.currentTimeMillis()
+            val event = if (!isAmbient) AlertEvent(category, label, confidence, if (isEmergency) SoundSeverity.High else SoundSeverity.Low, now) else null
+            val incident = event?.let { incidentEngine.detect(it.label, it.severity, it.confidence, now) }
             _audioState.value = _audioState.value.copy(
                 soundCategory = category,
                 displayLabel = label,
                 confidence = confidence,
                 isEmergency = isEmergency,
                 isSimulated = !isAmbient,
-                lastEmergencyTimestamp = if (isEmergency) System.currentTimeMillis() else _audioState.value.lastEmergencyTimestamp,
+                lastEmergencyTimestamp = if (isEmergency) now else _audioState.value.lastEmergencyTimestamp,
+                lastEmergencyLabel = if (isEmergency) label else _audioState.value.lastEmergencyLabel,
+                lastEmergencyConfidence = if (isEmergency) confidence else _audioState.value.lastEmergencyConfidence,
+                alertHistory = event?.let { (_audioState.value.alertHistory + it).takeLast(50) } ?: _audioState.value.alertHistory,
+                activeIncident = incident ?: _audioState.value.activeIncident,
                 amplitude = if (isEmergency) 0.88f else if (isAmbient) 0.08f else 0.55f,
             )
         }
@@ -141,6 +163,13 @@ class AudioMonitoringService : Service() {
             SoundClassifier.INPUT_SAMPLES * 2,
         )
 
+        val windowSamples = SoundClassifier.INPUT_SAMPLES
+        val strideSamples = windowSamples / 2
+
+        val ringBuffer = ShortArray(windowSamples)
+        var ringPos = 0
+        var totalRead = 0
+
         try {
             audioRecord = AudioRecord(
                 MediaRecorder.AudioSource.MIC,
@@ -157,52 +186,81 @@ class AudioMonitoringService : Service() {
             }
 
             audioRecord?.startRecording()
-            Log.i(TAG, "Audio recording started at 16kHz Mono")
+            Log.i(TAG, "Audio recording started at 16kHz Mono, stride=$strideSamples samples")
 
-            val pcmShorts = ShortArray(SoundClassifier.INPUT_SAMPLES)
-            val floatBuffer = FloatArray(SoundClassifier.INPUT_SAMPLES)
+            val readChunk = strideSamples
+            val pcmShorts = ShortArray(readChunk)
+            val floatBuffer = FloatArray(windowSamples)
+            var chunksSinceClassify = 0
 
             while (serviceScope.isActive && _audioState.value.isMonitoring) {
                 var readCount = 0
-                while (readCount < SoundClassifier.INPUT_SAMPLES && serviceScope.isActive) {
-                    val read = audioRecord?.read(pcmShorts, readCount, SoundClassifier.INPUT_SAMPLES - readCount) ?: -1
+                while (readCount < readChunk && serviceScope.isActive) {
+                    val read = audioRecord?.read(pcmShorts, readCount, readChunk - readCount) ?: -1
                     if (read <= 0) break
                     readCount += read
                 }
 
-                if (readCount > 0) {
-                    // Check if simulation lock is active
-                    if (System.currentTimeMillis() < simulatedUntil) {
-                        continue
+                if (readCount <= 0) continue
+
+                for (i in 0 until readCount) {
+                    ringBuffer[ringPos] = pcmShorts[i]
+                    ringPos = (ringPos + 1) % windowSamples
+                }
+                totalRead += readCount
+                chunksSinceClassify++
+
+                if (chunksSinceClassify < 1) continue
+
+                if (System.currentTimeMillis() < simulatedUntil) continue
+
+                for (i in 0 until windowSamples) {
+                    val srcIndex = (ringPos + i) % windowSamples
+                    floatBuffer[i] = ringBuffer[srcIndex] / 32768.0f
+                }
+
+                var sumSquares = 0.0
+                for (i in 0 until windowSamples) {
+                    sumSquares += (floatBuffer[i] * floatBuffer[i])
+                }
+                val rms = sqrt(sumSquares / windowSamples).toFloat()
+                val boostedAmplitude = (rms * 12.0f).coerceIn(0.05f, 1f)
+
+                val classification = classifier?.classify(floatBuffer)
+                if (classification != null) {
+                    Log.d(TAG, "Display: ${classification.displayLabel} (${String.format("%.3f", classification.confidence)}) cat=${classification.category} alert=${classification.isEmergency}")
+                    if (classification.debugText.isNotEmpty()) {
+                        Log.d(TAG, "Raw top10: ${classification.debugText}")
+                    }
+                    if (classification.topCandidates.isNotEmpty()) {
+                        Log.d(TAG, "Candidates: ${classification.topCandidates.joinToString { "${it.category}=${String.format("%.3f", it.score)}" }}")
                     }
 
-                    // Convert PCM 16-bit to Float normalized [-1.0, 1.0] and calculate RMS amplitude
-                    var sumSquares = 0.0
-                    for (i in 0 until readCount) {
-                        val norm = pcmShorts[i] / 32768.0f
-                        floatBuffer[i] = norm
-                        sumSquares += (norm * norm)
-                    }
-                    val rms = sqrt(sumSquares / readCount).toFloat()
-                    val boostedAmplitude = (rms * 12.0f).coerceIn(0.05f, 1f)
-
-                    val classification = classifier?.classify(floatBuffer)
-                    if (classification != null) {
-                        _audioState.value = _audioState.value.copy(
-                            soundCategory = classification.category,
-                            displayLabel = classification.displayLabel,
-                            confidence = classification.confidence,
-                            amplitude = boostedAmplitude,
-                            isEmergency = classification.isEmergency,
-                            isSimulated = false,
-                            lastEmergencyTimestamp = if (classification.isEmergency) System.currentTimeMillis() else _audioState.value.lastEmergencyTimestamp,
+                    _audioState.value = _audioState.value.copy(
+                        soundCategory = classification.category,
+                        displayLabel = classification.displayLabel,
+                        confidence = classification.confidence,
+                        amplitude = boostedAmplitude,
+                        isEmergency = classification.isEmergency,
+                        isSimulated = false,
+                        lastEmergencyTimestamp = if (classification.isEmergency) System.currentTimeMillis() else _audioState.value.lastEmergencyTimestamp,
+                        lastEmergencyLabel = if (classification.isEmergency) classification.displayLabel else _audioState.value.lastEmergencyLabel,
+                        lastEmergencyConfidence = if (classification.isEmergency) classification.confidence else _audioState.value.lastEmergencyConfidence,
+                        alertHistory = recordEvent(classification, _audioState.value.alertHistory),
+                        activeIncident = incidentEngine.detect(
+                            classification.displayLabel,
+                            classification.severity,
+                            classification.confidence,
+                            System.currentTimeMillis(),
+                        ) ?: incidentEngine.advance(System.currentTimeMillis()),
                         )
 
-                        if (classification.isEmergency) {
-                            updateNotification("🚨 Emergency Sound: ${classification.displayLabel}")
-                        }
+                    if (classification.isEmergency) {
+                        updateNotification("\uD83D\uDEA8 Emergency: ${classification.displayLabel}")
                     }
                 }
+
+                chunksSinceClassify = 0
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error in audio classification loop: ${e.message}", e)
@@ -217,8 +275,28 @@ class AudioMonitoringService : Service() {
         }
     }
 
+    private fun recordEvent(
+        classification: ClassificationResult,
+        existing: List<AlertEvent>,
+    ): List<AlertEvent> {
+        if (classification.severity == SoundSeverity.None) return existing
+        val now = System.currentTimeMillis()
+        if (classification.category == lastRecordedCategory && now - lastRecordedAt < 10_000L) return existing
+        lastRecordedCategory = classification.category
+        lastRecordedAt = now
+        return (existing + AlertEvent(
+            category = classification.category,
+            label = classification.displayLabel,
+            confidence = classification.confidence,
+            severity = classification.severity,
+            timestamp = now,
+        )).takeLast(50)
+    }
+
     private fun stopMonitoring() {
         simulatedUntil = 0L
+        classifier?.resetState()
+        incidentEngine.reset()
         _audioState.value = _audioState.value.copy(
             isMonitoring = false,
             displayLabel = "Monitoring Paused",
@@ -226,6 +304,7 @@ class AudioMonitoringService : Service() {
             amplitude = 0f,
             isEmergency = false,
             isSimulated = false,
+            activeIncident = null,
         )
         try {
             audioRecord?.stop()
