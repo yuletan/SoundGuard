@@ -18,6 +18,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -61,6 +62,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -1503,7 +1505,9 @@ private fun CaregiverPreviewScreen(
     var photoRequestedAt by remember { mutableStateOf(photoRequestedAt) }
     var photoDecisionAt by remember { mutableStateOf(photoDecisionAt) }
     var showFollowUpDialog by remember { mutableStateOf(photoPath != null) }
+    var showPhotoDetail by remember { mutableStateOf(false) }
     var acknowledgedAt by remember { mutableStateOf<Long?>(null) }
+    val previewBitmap = remember(photoPath) { photoPath?.let { BitmapFactory.decodeFile(it) } }
 
     LaunchedEffect(audioState.alertHistory) {
         val event = audioState.alertHistory.lastOrNull()
@@ -1671,14 +1675,23 @@ private fun CaregiverPreviewScreen(
                             fromSystem = true,
                             timestamp = photoDecisionAt,
                         )
-                        val previewBitmap = remember(photoPath) { BitmapFactory.decodeFile(photoPath) }
                         if (previewBitmap != null) {
                             Spacer(Modifier.height(8.dp))
                             Image(
                                 bitmap = previewBitmap.asImageBitmap(),
                                 contentDescription = "Verification photo",
-                                modifier = Modifier.fillMaxWidth().height(220.dp),
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(220.dp)
+                                    .clickable { showPhotoDetail = true },
                             )
+                            TextButton(
+                                onClick = { showPhotoDetail = true },
+                                modifier = Modifier.align(Alignment.CenterHorizontally),
+                            ) {
+                                Text("View photo in detail")
+                            }
                         }
                     }
                 }
@@ -1724,6 +1737,24 @@ private fun CaregiverPreviewScreen(
                 },
                 dismissButton = {
                     TextButton(onClick = { showFollowUpDialog = false }) { Text("Not now") }
+                },
+            )
+        }
+
+        if (showPhotoDetail && previewBitmap != null) {
+            AlertDialog(
+                onDismissRequest = { showPhotoDetail = false },
+                title = { Text("Verification photo") },
+                text = {
+                    Image(
+                        bitmap = previewBitmap.asImageBitmap(),
+                        contentDescription = "Detailed verification photo",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier.fillMaxWidth().height(420.dp),
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { showPhotoDetail = false }) { Text("Close") }
                 },
             )
         }
