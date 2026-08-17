@@ -1928,6 +1928,10 @@ private fun CaregiverDashboard(
 
     LaunchedEffect(Unit) {
         onRefresh()
+        while (true) {
+            delay(15_000L)
+            onRefresh()
+        }
     }
 
     Column(
