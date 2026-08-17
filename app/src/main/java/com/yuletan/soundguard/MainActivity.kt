@@ -377,6 +377,7 @@ class MainActivity : ComponentActivity() {
         }
 
         checkExistingSession()
+        PushTokenRegistrar.register(this)
         handleOAuthIntent(intent)
     }
 
@@ -397,6 +398,7 @@ class MainActivity : ComponentActivity() {
             profileClient.fetchMyProfile()
                 .onSuccess { profile ->
                     if (profile != null) {
+                        PushTokenRegistrar.register(this@MainActivity)
                         fullName = profile.fullName
                         email = profile.email
                         phone = profile.phone
