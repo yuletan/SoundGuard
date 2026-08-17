@@ -494,12 +494,18 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 profileClient.saveProfile(email, fullName, phone, role)
                     .onSuccess {
+                        if (role.equals("beneficiary", ignoreCase = true)) {
+                            profileClient.saveBeneficiarySettings(monitoringConsent)
+                                .onFailure { setupMessage = it.message ?: "Could not save monitoring consent." }
+                        }
+                        if (setupMessage == null) {
                         if (role.equals("caregiver", ignoreCase = true)) {
                             screen = AppScreen.CaregiverDashboard
                             refreshCaregiverData()
                         } else {
                             screen = AppScreen.BeneficiaryDashboard
                             refreshBeneficiaryData()
+                        }
                         }
                     }
                     .onFailure { setupMessage = it.message ?: "Could not save profile." }

@@ -107,6 +107,48 @@ class ProfileClient(context: Context) {
         }
     }
 
+    suspend fun saveBeneficiarySettings(
+        monitoringConsent: Boolean,
+        shareWithCaregiver: Boolean = false,
+        cameraRequestsConsent: Boolean = false,
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.accessToken() ?: error("Your session has expired. Please sign in again.")
+            val userId = authClient.userId() ?: error("No authenticated user was found.")
+            if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
+                error("Supabase configuration is missing in local.properties.")
+            }
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/beneficiary_settings"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Prefer", "resolution=merge-duplicates,return=minimal")
+                doOutput = true
+            }
+            val body = JSONObject().apply {
+                put("user_id", userId)
+                put("consent_monitoring", monitoringConsent)
+                put("consent_share_with_caregiver", shareWithCaregiver)
+                put("consent_camera_requests", cameraRequestsConsent)
+                put("updated_at", java.time.Instant.now().toString())
+            }
+            try {
+                connection.outputStream.use { it.write(body.toString().toByteArray()) }
+                val responseCode = connection.responseCode
+                if (responseCode !in 200..299) {
+                    val response = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    error("Beneficiary settings save failed with HTTP $responseCode: ${response.ifBlank { "empty response" }}")
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
     suspend fun resetRole(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val token = authClient.accessToken() ?: error("Your session has expired.")
