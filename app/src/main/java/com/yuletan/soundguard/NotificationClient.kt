@@ -17,44 +17,86 @@ data class CaregiverNotification(
     val confidence: Float,
     val status: String,
     val createdAt: String,
+    val incidentStartedAt: String,
 )
 
 class NotificationClient(context: Context) {
     private val authClient = AuthClient(context)
 
+    private val selectFields = "id,incident_id,status,created_at,incidents(beneficiary_id,sound_label,severity,confidence,started_at)"
+
     suspend fun fetchMine(): Result<List<CaregiverNotification>> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: return@runCatching emptyList()
+            val token = authClient.getToken()
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
-                "/rest/v1/notifications?select=id,incident_id,status,created_at,incidents(beneficiary_id,sound_label,severity,confidence)&order=created_at.desc&limit=50"
+                "/rest/v1/notifications?select=$selectFields&order=created_at.desc&limit=50"
             val connection = open(endpoint, token, "GET")
             try {
                 val response = readResponse(connection)
-                JSONArray(response).let { array ->
-                    (0 until array.length()).map { index ->
-                        val row = array.getJSONObject(index)
-                        val incident = row.optJSONObject("incidents")
-                        CaregiverNotification(
-                            id = row.getString("id"),
-                            incidentId = row.getString("incident_id"),
-                            beneficiaryId = incident?.optString("beneficiary_id").orEmpty(),
-                            soundLabel = incident?.optString("sound_label").orEmpty(),
-                            severity = incident?.optString("severity").orEmpty(),
-                            confidence = incident?.optDouble("confidence", 0.0)?.toFloat() ?: 0f,
-                            status = row.optString("status", "queued"),
-                            createdAt = row.optString("created_at"),
-                        )
-                    }
-                }
+                parseNotifications(response)
             } finally {
                 connection.disconnect()
             }
         }
     }
 
+    suspend fun fetchForConnection(beneficiaryId: String): Result<List<CaregiverNotification>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.getToken()
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
+                "/rest/v1/notifications?select=$selectFields" +
+                "&incidents.beneficiary_id=eq.$beneficiaryId" +
+                "&order=created_at.asc&limit=200"
+            val connection = open(endpoint, token, "GET")
+            try {
+                val response = readResponse(connection)
+                parseNotifications(response)
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
+    suspend fun fetchForBeneficiary(): Result<List<CaregiverNotification>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.getToken()
+            val userId = authClient.userId() ?: return@runCatching emptyList()
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
+                "/rest/v1/notifications?select=$selectFields" +
+                "&incidents.beneficiary_id=eq.$userId" +
+                "&order=created_at.asc&limit=200"
+            val connection = open(endpoint, token, "GET")
+            try {
+                val response = readResponse(connection)
+                parseNotifications(response)
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
+    private fun parseNotifications(response: String): List<CaregiverNotification> {
+        val array = JSONArray(response)
+        return (0 until array.length()).map { index ->
+            val row = array.getJSONObject(index)
+            val incident = row.optJSONObject("incidents")
+            CaregiverNotification(
+                id = row.getString("id"),
+                incidentId = row.getString("incident_id"),
+                beneficiaryId = incident?.optString("beneficiary_id").orEmpty(),
+                soundLabel = incident?.optString("sound_label").orEmpty(),
+                severity = incident?.optString("severity").orEmpty(),
+                confidence = incident?.optDouble("confidence", 0.0)?.toFloat() ?: 0f,
+                status = row.optString("status", "queued"),
+                createdAt = row.optString("created_at"),
+                incidentStartedAt = incident?.optString("started_at").orEmpty(),
+            )
+        }
+    }
+
     suspend fun acknowledge(id: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Your session has expired.")
+            val token = authClient.getToken()
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/notifications?id=eq.$id"
             val connection = open(endpoint, token, "PATCH")
             connection.setRequestProperty("Prefer", "return=minimal")
@@ -66,6 +108,20 @@ class NotificationClient(context: Context) {
                         put("acknowledged_at", java.time.Instant.now().toString())
                     }.toString().toByteArray())
                 }
+                readResponse(connection)
+                Unit
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
+    suspend fun delete(id: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.getToken()
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/notifications?id=eq.$id"
+            val connection = open(endpoint, token, "DELETE")
+            try {
                 readResponse(connection)
                 Unit
             } finally {

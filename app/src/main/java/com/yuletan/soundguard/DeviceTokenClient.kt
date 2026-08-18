@@ -12,7 +12,7 @@ class DeviceTokenClient(context: Context) {
 
     suspend fun registerToken(token: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val accessToken = authClient.accessToken() ?: return@runCatching
+            val accessToken = authClient.getToken()
             val userId = authClient.userId() ?: return@runCatching
             if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) return@runCatching
 

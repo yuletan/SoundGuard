@@ -39,7 +39,7 @@ class CareClient(context: Context) {
 
     suspend fun linkDemoJames(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Session expired. Please sign in again.")
+            val token = authClient.getToken()
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/rpc/link_demo_james"
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
@@ -65,7 +65,7 @@ class CareClient(context: Context) {
 
     suspend fun createPairingCode(): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Session expired. Please sign in again.")
+            val token = authClient.getToken()
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/rpc/create_pairing_code"
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
@@ -95,7 +95,7 @@ class CareClient(context: Context) {
 
     suspend fun acceptPairingCode(code: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Session expired. Please sign in again.")
+            val token = authClient.getToken()
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/rpc/accept_pairing_code"
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
@@ -131,7 +131,7 @@ class CareClient(context: Context) {
 
     suspend fun fetchCaregiversForBeneficiary(): Result<List<CaregiverMember>> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Session expired. Please sign in again.")
+            val token = authClient.getToken()
             val userId = authClient.userId() ?: error("No user found.")
 
             // Fetch care connections
@@ -175,7 +175,7 @@ class CareClient(context: Context) {
 
     suspend fun fetchBeneficiariesForCaregiver(): Result<List<MonitoredBeneficiary>> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Session expired. Please sign in again.")
+            val token = authClient.getToken()
             val userId = authClient.userId() ?: error("No user found.")
 
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
@@ -216,7 +216,7 @@ class CareClient(context: Context) {
 
     suspend fun removeCareConnection(connectionId: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Session expired.")
+            val token = authClient.getToken()
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
                 "/rest/v1/care_connections?id=eq.$connectionId"
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
@@ -243,7 +243,7 @@ class CareClient(context: Context) {
         targetConnectionId: String,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Session expired.")
+            val token = authClient.getToken()
             // Clear primary for all caregivers of this beneficiary
             val resetEndpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
                 "/rest/v1/care_connections?beneficiary_id=eq.$beneficiaryId"
@@ -258,7 +258,7 @@ class CareClient(context: Context) {
 
     suspend fun countActiveConnections(): Result<Int> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Session expired.")
+            val token = authClient.getToken()
             val userId = authClient.userId() ?: error("No user found.")
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
                 "/rest/v1/care_connections?or=(beneficiary_id.eq.$userId,caregiver_id.eq.$userId)&status=eq.active&select=id"

@@ -16,12 +16,16 @@ data class UserProfile(
     val setupCompletedAt: String?,
 )
 
+data class BeneficiarySettings(
+    val autoApproveCameraRequests: Boolean,
+)
+
 class ProfileClient(context: Context) {
     private val authClient = AuthClient(context)
 
     suspend fun fetchMyProfile(): Result<UserProfile?> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: return@runCatching null
+            val token = authClient.getToken()
             val userId = authClient.userId() ?: return@runCatching null
             if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
                 error("Supabase configuration is missing in local.properties.")
@@ -70,7 +74,7 @@ class ProfileClient(context: Context) {
         role: String,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Your session has expired. Please sign in again.")
+            val token = authClient.getToken()
             val userId = authClient.userId() ?: error("No authenticated user was found.")
             if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
                 error("Supabase configuration is missing in local.properties.")
@@ -113,9 +117,10 @@ class ProfileClient(context: Context) {
         monitoringConsent: Boolean,
         shareWithCaregiver: Boolean = false,
         cameraRequestsConsent: Boolean = false,
+        autoApproveCameraRequests: Boolean = true,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Your session has expired. Please sign in again.")
+            val token = authClient.getToken()
             val userId = authClient.userId() ?: error("No authenticated user was found.")
             if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
                 error("Supabase configuration is missing in local.properties.")
@@ -136,6 +141,7 @@ class ProfileClient(context: Context) {
                 put("consent_monitoring", monitoringConsent)
                 put("consent_share_with_caregiver", shareWithCaregiver)
                 put("consent_camera_requests", cameraRequestsConsent)
+                put("auto_approve_camera_requests", autoApproveCameraRequests)
                 put("updated_at", java.time.Instant.now().toString())
             }
             try {
@@ -151,9 +157,35 @@ class ProfileClient(context: Context) {
         }
     }
 
+    suspend fun fetchBeneficiarySettings(): Result<BeneficiarySettings> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.getToken()
+            val userId = authClient.userId() ?: error("No authenticated user was found.")
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
+                "/rest/v1/beneficiary_settings?user_id=eq.$userId&select=auto_approve_camera_requests"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+            }
+            try {
+                val code = connection.responseCode
+                val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (code !in 200..299) error("Beneficiary settings fetch failed with HTTP $code: $response")
+                val row = org.json.JSONArray(response).optJSONObject(0)
+                BeneficiarySettings(row?.optBoolean("auto_approve_camera_requests", true) ?: true)
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
     suspend fun resetRole(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Your session has expired.")
+            val token = authClient.getToken()
             val userId = authClient.userId() ?: error("No authenticated user was found.")
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/profiles?id=eq.$userId"
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
@@ -185,7 +217,7 @@ class ProfileClient(context: Context) {
 
     suspend fun resetAllAccountData(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val token = authClient.accessToken() ?: error("Your session has expired.")
+            val token = authClient.getToken()
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/rpc/reset_my_account_data"
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"

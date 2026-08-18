@@ -26,14 +26,14 @@ class PushMessagingService : FirebaseMessagingService() {
         val body = message.notification?.body
             ?: data["body"]
             ?: "A caregiver alert requires your attention."
-        showAlertNotification(title, body, data["incident_id"])
+        showAlertNotification(title, body, data["incident_id"], data["beneficiary_id"])
     }
 
     override fun onNewToken(token: String) {
         PushTokenRegistrar.saveAndRegister(this, token)
     }
 
-    private fun showAlertNotification(title: String, body: String, incidentId: String?) {
+    private fun showAlertNotification(title: String, body: String, incidentId: String?, beneficiaryId: String? = null) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -57,6 +57,7 @@ class PushMessagingService : FirebaseMessagingService() {
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("incident_id", incidentId)
+            if (beneficiaryId != null) putExtra("beneficiary_id", beneficiaryId)
         }
         val pendingIntent = android.app.PendingIntent.getActivity(
             this,

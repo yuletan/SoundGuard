@@ -15,6 +15,14 @@ data class SnapshotRequest(
     val id: String,
     val storagePath: String,
     val expiresAt: String?,
+    val approvalStatus: String,
+)
+
+data class PendingSnapshotRequest(
+    val id: String,
+    val incidentId: String,
+    val requestedBy: String,
+    val requestedAt: String,
 )
 
 class SnapshotClient(context: Context) {
@@ -56,6 +64,7 @@ class SnapshotClient(context: Context) {
                 id = row.getString("id"),
                 storagePath = row.getString("storage_path"),
                 expiresAt = row.optString("expires_at").takeIf { it.isNotBlank() },
+                approvalStatus = row.optString("approval_status", "pending"),
             )
         }
     }
@@ -78,7 +87,8 @@ class SnapshotClient(context: Context) {
             try {
                 file.inputStream().use { input -> upload.outputStream.use { output -> input.copyTo(output) } }
                 if (upload.responseCode !in 200..299) {
-                    error("Snapshot upload failed with HTTP ${upload.responseCode}.")
+                    val body = upload.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    error("Snapshot upload failed with HTTP ${upload.responseCode}: $body")
                 }
             } finally {
                 upload.disconnect()
@@ -91,6 +101,150 @@ class SnapshotClient(context: Context) {
                 prefer = "return=minimal",
             )
             Unit
+        }
+    }
+
+    suspend fun fetchPendingForBeneficiary(): Result<PendingSnapshotRequest?> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = requireToken()
+            val beneficiaryId = authClient.userId() ?: error("No authenticated user was found.")
+            val endpoint = "${restUrl("camera_snapshots")}?beneficiary_id=eq.$beneficiaryId&approval_status=eq.pending&status=eq.requested&select=id,incident_id,requested_by,requested_at&order=requested_at.desc&limit=1"
+            val response = requestJson("GET", endpoint, token, JSONObject(), null)
+            val row = org.json.JSONArray(response).optJSONObject(0) ?: return@runCatching null
+            PendingSnapshotRequest(
+                id = row.getString("id"),
+                incidentId = row.getString("incident_id"),
+                requestedBy = row.getString("requested_by"),
+                requestedAt = row.optString("requested_at"),
+            )
+        }
+    }
+
+    suspend fun decidePendingRequest(id: String, approved: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = requireToken()
+            requestJson(
+                "PATCH",
+                "${restUrl("camera_snapshots")}?id=eq.${encode(id)}",
+                token,
+                JSONObject().put("approval_status", if (approved) "approved" else "declined"),
+                "return=minimal",
+            )
+            Unit
+        }
+    }
+
+    suspend fun fetchApprovalStatus(id: String): Result<String?> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = requireToken()
+            val response = requestJson(
+                "GET",
+                "${restUrl("camera_snapshots")}?id=eq.${encode(id)}&select=approval_status&limit=1",
+                token,
+                JSONObject(),
+                null,
+            )
+            org.json.JSONArray(response).optJSONObject(0)?.optString("approval_status")
+        }
+    }
+
+    data class SnapshotStatus(
+        val approvalStatus: String?,
+        val uploadStatus: String?,
+        val storagePath: String?,
+    )
+
+    suspend fun fetchSnapshotStatus(id: String): Result<SnapshotStatus> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = requireToken()
+            val response = requestJson(
+                "GET",
+                "${restUrl("camera_snapshots")}?id=eq.${encode(id)}&select=approval_status,status,storage_path&limit=1",
+                token,
+                JSONObject(),
+                null,
+            )
+            val row = org.json.JSONArray(response).optJSONObject(0)
+            SnapshotStatus(
+                approvalStatus = row?.optString("approval_status"),
+                uploadStatus = row?.optString("status"),
+                storagePath = row?.optString("storage_path"),
+            )
+        }
+    }
+
+    data class SnapshotWithUrl(
+        val id: String,
+        val approvalStatus: String?,
+        val uploadStatus: String?,
+        val storagePath: String?,
+        val signedUrl: String?,
+        val expiresAt: String?,
+    )
+
+    suspend fun fetchSnapshotsForIncident(incidentId: String): Result<List<SnapshotWithUrl>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = requireToken()
+            val response = requestJson(
+                "GET",
+                "${restUrl("camera_snapshots")}?incident_id=eq.${encode(incidentId)}&select=id,approval_status,status,storage_path,expires_at&order=created_at.asc",
+                token,
+                JSONObject(),
+                null,
+            )
+            val array = org.json.JSONArray(response)
+            val results = mutableListOf<SnapshotWithUrl>()
+            for (i in 0 until array.length()) {
+                val row = array.getJSONObject(i)
+                val storagePath = row.optString("storage_path").takeIf { it.isNotBlank() }
+                val uploadStatus = row.optString("status")
+                val expiresAt = row.optString("expires_at").takeIf { it.isNotBlank() }
+                val signedUrl = if (uploadStatus == "uploaded" && storagePath != null) {
+                    try {
+                        val signResponse = requestJson(
+                            "POST",
+                            "${BuildConfig.SUPABASE_URL.trimEnd('/')}/storage/v1/object/sign/$BUCKET/${encodePath(storagePath)}",
+                            token,
+                            JSONObject().apply { put("expiresIn", 600) },
+                            null,
+                        )
+                        val signedPath = JSONObject(signResponse).getString("signedURL")
+                        if (signedPath.startsWith("http")) signedPath else BuildConfig.SUPABASE_URL.trimEnd('/') + "/storage/v1" + signedPath
+                    } catch (_: Exception) { null }
+                } else null
+                results.add(
+                    SnapshotWithUrl(
+                        id = row.getString("id"),
+                        approvalStatus = row.optString("approval_status").takeIf { it.isNotBlank() },
+                        uploadStatus = uploadStatus.takeIf { it.isNotBlank() },
+                        storagePath = storagePath,
+                        signedUrl = signedUrl,
+                        expiresAt = expiresAt,
+                    )
+                )
+            }
+            results
+        }
+    }
+
+    suspend fun fetchRequest(id: String): Result<SnapshotRequest> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = requireToken()
+            val response = requestJson(
+                "GET",
+                "${restUrl("camera_snapshots")}?id=eq.${encode(id)}&select=id,storage_path,expires_at,approval_status&limit=1",
+                token,
+                JSONObject(),
+                null,
+            )
+            val row = org.json.JSONArray(response).optJSONObject(0)
+                ?: error("Snapshot request not found.")
+            SnapshotRequest(
+                id = row.getString("id"),
+                storagePath = row.getString("storage_path"),
+                expiresAt = row.optString("expires_at").takeIf { it.isNotBlank() },
+                approvalStatus = row.optString("approval_status", "pending"),
+            )
         }
     }
 
@@ -109,7 +263,7 @@ class SnapshotClient(context: Context) {
         }
     }
 
-    private fun requireToken(): String = authClient.accessToken() ?: error("Your session has expired.")
+    private suspend fun requireToken(): String = authClient.getToken()
 
     private fun restUrl(table: String): String = BuildConfig.SUPABASE_URL.trimEnd('/') + "/rest/v1/$table"
 
@@ -134,10 +288,12 @@ class SnapshotClient(context: Context) {
             setRequestProperty("Authorization", "Bearer $token")
             setRequestProperty("Content-Type", "application/json")
             prefer?.let { setRequestProperty("Prefer", it) }
-            doOutput = true
+            doOutput = method != "GET"
         }
         return try {
-            connection.outputStream.use { it.write(body.toString().toByteArray()) }
+            if (method != "GET") {
+                connection.outputStream.use { it.write(body.toString().toByteArray()) }
+            }
             val responseCode = connection.responseCode
             val response = (if (responseCode in 200..299) connection.inputStream else connection.errorStream)
                 ?.bufferedReader()?.use { it.readText() }.orEmpty()

@@ -1,6 +1,7 @@
 package com.yuletan.soundguard
 
 import android.Manifest
+import kotlinx.coroutines.Dispatchers
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -77,8 +78,6 @@ import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.Date
 
-private const val JAMES_TEST_ID = "7f3c2a91-6b84-4d1e-9f52-8a7c6b3d1042"
-
 private enum class AppScreen {
     Loading,
     Login,
@@ -88,7 +87,7 @@ private enum class AppScreen {
     Terms,
     BeneficiaryDashboard,
     CaregiverDashboard,
-    CaregiverPreview,
+    Chat,
     Settings,
 }
 
@@ -98,6 +97,7 @@ class MainActivity : ComponentActivity() {
     private var fullName by mutableStateOf("")
     private var phone by mutableStateOf("")
     private var monitoringConsent by mutableStateOf(false)
+    private var autoApproveCameraRequests by mutableStateOf(true)
     private var termsAccepted by mutableStateOf(false)
     private var microphoneGranted by mutableStateOf(false)
     private var notificationsGranted by mutableStateOf(false)
@@ -112,11 +112,8 @@ class MainActivity : ComponentActivity() {
 
     // Dashboard State
     private var connectedCaregivers by mutableStateOf<List<CaregiverMember>>(emptyList())
-    private var sharedIncidents by mutableStateOf<List<SharedIncident>>(emptyList())
     private var monitoredBeneficiaries by mutableStateOf<List<MonitoredBeneficiary>>(emptyList())
     private var caregiverNotifications by mutableStateOf<List<CaregiverNotification>>(emptyList())
-    private var selectedNotification by mutableStateOf<CaregiverNotification?>(null)
-    private var previewBeneficiary by mutableStateOf<MonitoredBeneficiary?>(null)
     private var generatedPairingCode by mutableStateOf<String?>(null)
     private var dashboardLoading by mutableStateOf(false)
     private var dashboardMessage by mutableStateOf<String?>(null)
@@ -129,8 +126,14 @@ class MainActivity : ComponentActivity() {
     private var demoPhotoPath by mutableStateOf<String?>(null)
     private var demoSnapshotRequest by mutableStateOf<SnapshotRequest?>(null)
     private var demoSnapshotMessage by mutableStateOf<String?>(null)
+    private var pendingSnapshotRequest by mutableStateOf<PendingSnapshotRequest?>(null)
     private var loadedSessionUserId: String? = null
     private var showResetDataDialog by mutableStateOf(false)
+
+    // Chat State
+    private var chatMessages by mutableStateOf<List<ChatMessage>>(emptyList())
+    private var selectedChatPartner by mutableStateOf<ChatPreview?>(null)
+    private var chatLoading by mutableStateOf(false)
 
     // Role Switch Dialog States
     private var showBlockedSwitchDialog by mutableStateOf(false)
@@ -141,6 +144,7 @@ class MainActivity : ComponentActivity() {
     private val profileClient by lazy { ProfileClient(this) }
     private val careClient by lazy { CareClient(this) }
     private val notificationClient by lazy { NotificationClient(this) }
+    private val chatRepository by lazy { ChatRepository(this) }
 
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -197,7 +201,8 @@ class MainActivity : ComponentActivity() {
                             role = selectedRole,
                             fullName = fullName,
                             phone = phone,
-                            consent = monitoringConsent,
+                             consent = monitoringConsent,
+                             autoApproveCameraRequests = autoApproveCameraRequests,
                             termsAccepted = termsAccepted,
                             microphoneGranted = microphoneGranted,
                             notificationsGranted = notificationsGranted,
@@ -205,7 +210,8 @@ class MainActivity : ComponentActivity() {
                             setupMessage = setupMessage,
                             onFullNameChange = { fullName = it },
                             onPhoneChange = { phone = it },
-                            onConsentChange = { monitoringConsent = it },
+                             onConsentChange = { monitoringConsent = it },
+                             onAutoApproveCameraRequestsChange = { autoApproveCameraRequests = it },
                             onTermsChange = { termsAccepted = it },
                             onOpenTerms = { screen = AppScreen.Terms },
                             onRequestPermissions = { requestAppPermissions() },
@@ -215,7 +221,7 @@ class MainActivity : ComponentActivity() {
                         )
                         AppScreen.CameraTest -> CameraTestScreen(
                             onBack = {
-                                screen = if (returnToPreviewAfterCamera) AppScreen.CaregiverPreview else AppScreen.Setup
+                                screen = if (returnToPreviewAfterCamera) AppScreen.BeneficiaryDashboard else AppScreen.Setup
                                 returnToPreviewAfterCamera = false
                             },
                             onFinished = { capturedPath ->
@@ -232,7 +238,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                     }
                                 }
-                                screen = if (returnToPreviewAfterCamera) AppScreen.CaregiverPreview else AppScreen.Setup
+                                screen = if (returnToPreviewAfterCamera) AppScreen.BeneficiaryDashboard else AppScreen.Setup
                                 returnToPreviewAfterCamera = false
                             },
                         )
@@ -271,8 +277,7 @@ class MainActivity : ComponentActivity() {
                                 AudioMonitoringService.simulateSound(category, label, confidence, isEmergency)
                             },
                              caregivers = connectedCaregivers,
-                             sharedIncidents = sharedIncidents,
-                            pairingCode = generatedPairingCode,
+                             pairingCode = generatedPairingCode,
                             loading = dashboardLoading,
                             message = dashboardMessage,
                             onGenerateCode = { generatePairingCode() },
@@ -280,10 +285,14 @@ class MainActivity : ComponentActivity() {
                              onSetPrimary = { connectionId, caregiverId -> setPrimaryCaregiver(connectionId, caregiverId) },
                              onRemoveCaregiver = { connectionId -> removeCaregiver(connectionId) },
                              onCall = { targetPhone -> callPhoneNumber(targetPhone) },
-                             onOpenCaregiverPreview = { previewBeneficiary = null; screen = AppScreen.CaregiverPreview },
+                             onOpenCaregiverChat = { partner ->
+                                 selectedChatPartner = partner
+                                 screen = AppScreen.Chat
+                                 loadChatMessages(partner.partnerId)
+                             },
                              onLinkDemoCaregiver = { demoCaregiverLinked = true },
                              onOpenSettings = { screen = AppScreen.Settings },
-                            onRefresh = { refreshBeneficiaryData() },
+                             onRefresh = { refreshBeneficiaryData() },
                         )
                         AppScreen.CaregiverDashboard -> CaregiverDashboard(
                             fullName = fullName,
@@ -294,55 +303,56 @@ class MainActivity : ComponentActivity() {
                             onConnectBeneficiary = { code -> pairBeneficiary(code) },
                              onRemoveBeneficiary = { connectionId -> removeBeneficiary(connectionId) },
                              onCall = { targetPhone -> callPhoneNumber(targetPhone) },
-                             onOpenBeneficiary = { beneficiary -> previewBeneficiary = beneficiary; screen = AppScreen.CaregiverPreview },
-                             notifications = caregiverNotifications,
-                             onAcknowledgeNotification = { id -> acknowledgeNotification(id) },
-                             onOpenNotification = { notification ->
-                                 selectedNotification = notification
-                                 previewBeneficiary = monitoredBeneficiaries.firstOrNull { it.beneficiaryId == notification.beneficiaryId }
-                                 screen = AppScreen.CaregiverPreview
+                             onOpenBeneficiaryChat = { partner ->
+                                 selectedChatPartner = partner
+                                 screen = AppScreen.Chat
+                                 loadChatMessages(partner.partnerId)
                              },
-                             onOpenSettings = { screen = AppScreen.Settings },
-                             onRefresh = { refreshCaregiverData() },
-                         )
-                         AppScreen.CaregiverPreview -> CaregiverPreviewScreen(
-                             beneficiaryName = previewBeneficiary?.name ?: fullName.ifBlank { "Beneficiary" },
-                             beneficiaryPhone = previewBeneficiary?.phone ?: phone,
-                             audioState = liveAudioState,
-                             demoCaregiverLinked = demoCaregiverLinked,
-                              onBack = { screen = if (previewBeneficiary != null) AppScreen.CaregiverDashboard else AppScreen.BeneficiaryDashboard },
-                              onLinkDemoCaregiver = {
-                                  lifecycleScope.launch {
-                                      careClient.linkDemoJames()
-                                          .onSuccess {
-                                              demoCaregiverLinked = true
-                                              demoSnapshotMessage = "Demo caregiver linked to James."
-                                          }
-                                          .onFailure { demoSnapshotMessage = "Demo link failed: ${it.message}" }
-                                  }
-                              },
-                              onCall = { callPhoneNumber(previewBeneficiary?.phone ?: phone) },
-                              photoRequested = demoPhotoRequested,
-                              photoDecision = demoPhotoDecision,
-                              photoRequestedAt = demoPhotoRequestedAt,
-                               photoDecisionAt = demoPhotoDecisionAt,
-                               photoPath = demoPhotoPath,
-                               snapshotMessage = demoSnapshotMessage,
-                               backendAlert = selectedNotification,
-                               onOpenCamera = {
-                                   if (demoCaregiverLinked) requestDemoSnapshotAndOpenCamera()
-                                   else demoSnapshotMessage = "Link the demo caregiver first."
-                               },
-                         )
+                              onOpenSettings = { screen = AppScreen.Settings },
+                              onRefresh = { refreshCaregiverData() },
+                          )
+                        AppScreen.Chat -> ChatScreen(
+                            partnerName = selectedChatPartner?.partnerName ?: "Chat",
+                            partnerPhone = selectedChatPartner?.partnerPhone.orEmpty(),
+                            messages = chatMessages,
+                            loading = chatLoading,
+                            isCaregiverView = selectedRole.equals("caregiver", ignoreCase = true),
+                            snapshotMessage = demoSnapshotMessage,
+                            onRequestPhoto = {
+                                if (selectedRole.equals("caregiver", ignoreCase = true)) requestDemoSnapshotAndOpenCamera(false)
+                                else demoSnapshotMessage = "Photo requests are made by caregivers."
+                            },
+                            onCall = { callPhoneNumber(selectedChatPartner?.partnerPhone.orEmpty()) },
+                            onBack = {
+                                screen = if (selectedRole.equals("caregiver", ignoreCase = true))
+                                    AppScreen.CaregiverDashboard else AppScreen.BeneficiaryDashboard
+                            },
+                            onRefresh = {
+                                selectedChatPartner?.let { partner ->
+                                    loadChatMessages(partner.partnerId)
+                                }
+                            },
+                        )
                          AppScreen.Settings -> SettingsScreen(
                             fullName = fullName,
                             email = email,
                             phone = phone,
                             currentRole = selectedRole ?: "User",
-                            microphoneGranted = microphoneGranted,
-                            notificationsGranted = notificationsGranted,
+                             microphoneGranted = microphoneGranted,
+                             notificationsGranted = notificationsGranted,
+                             autoApproveCameraRequests = autoApproveCameraRequests,
                             onFullNameChange = { fullName = it },
-                            onPhoneChange = { phone = it },
+                             onPhoneChange = { phone = it },
+                             onAutoApproveCameraRequestsChange = { value ->
+                                 autoApproveCameraRequests = value
+                                 lifecycleScope.launch {
+                                     profileClient.saveBeneficiarySettings(
+                                         monitoringConsent = monitoringConsent,
+                                         autoApproveCameraRequests = autoApproveCameraRequests,
+                                     )
+                                         .onFailure { dashboardMessage = it.message }
+                                 }
+                             },
                             onSaveProfile = { updateProfile() },
                             onRequestSwitchRole = { handleRoleSwitchRequest() },
                             onOpenTerms = { screen = AppScreen.Terms },
@@ -357,6 +367,20 @@ class MainActivity : ComponentActivity() {
                              onSignOut = { signOut() },
                              onResetAllData = { showResetDataDialog = true },
                          )
+                    }
+
+                    pendingSnapshotRequest?.let { request ->
+                        AlertDialog(
+                            onDismissRequest = { pendingSnapshotRequest = null },
+                            title = { Text("Verification photo request") },
+                            text = { Text("Your caregiver requested a verification photo during an active incident. Approve this request to allow the photo check.") },
+                            confirmButton = {
+                                Button(onClick = { decideSnapshotRequest(request.id, true) }) { Text("Approve") }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { decideSnapshotRequest(request.id, false) }) { Text("Decline") }
+                            },
+                        )
                     }
 
                     // Blocked Role Switch Dialog
@@ -429,17 +453,19 @@ class MainActivity : ComponentActivity() {
         checkExistingSession()
         PushTokenRegistrar.register(this)
         handleOAuthIntent(intent)
+        handleChatDeepLink(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleOAuthIntent(intent)
+        handleChatDeepLink(intent)
     }
 
     private fun checkExistingSession() {
         lifecycleScope.launch {
-            val token = authClient.accessToken()
+            val token = try { authClient.getToken() } catch (_: Exception) { null }
             if (token.isNullOrBlank()) {
                 resetAccountState()
                 screen = AppScreen.Login
@@ -458,6 +484,10 @@ class MainActivity : ComponentActivity() {
                         fullName = profile.fullName
                         email = profile.email
                         phone = profile.phone
+                        if (profile.role.equals("beneficiary", ignoreCase = true)) {
+                            profileClient.fetchBeneficiarySettings()
+                                .onSuccess { autoApproveCameraRequests = it.autoApproveCameraRequests }
+                        }
                         selectedRole = profile.role
                             .takeUnless { it.equals("null", ignoreCase = true) || it.isBlank() }
                             ?.replaceFirstChar { it.uppercase() }
@@ -494,6 +524,29 @@ class MainActivity : ComponentActivity() {
                     checkExistingSession()
                 }
                 .onFailure { authMessage = it.message ?: "Google sign-in failed." }
+        }
+    }
+
+    private fun handleChatDeepLink(intent: Intent?) {
+        val beneficiaryId = intent?.getStringExtra("beneficiary_id") ?: return
+        if (screen != AppScreen.CaregiverDashboard && screen != AppScreen.BeneficiaryDashboard) return
+        lifecycleScope.launch {
+            val partnerName = monitoredBeneficiaries.firstOrNull { it.beneficiaryId == beneficiaryId }?.name
+                ?: connectedCaregivers.firstOrNull { it.caregiverId == beneficiaryId }?.name
+                ?: "Chat"
+            val partnerPhone = monitoredBeneficiaries.firstOrNull { it.beneficiaryId == beneficiaryId }?.phone
+                ?: connectedCaregivers.firstOrNull { it.caregiverId == beneficiaryId }?.phone
+                ?: ""
+            selectedChatPartner = ChatPreview(
+                partnerId = beneficiaryId,
+                partnerName = partnerName,
+                partnerPhone = partnerPhone,
+                lastMessage = "",
+                lastTimestamp = System.currentTimeMillis(),
+                unreadCount = 0,
+            )
+            screen = AppScreen.Chat
+            loadChatMessages(beneficiaryId)
         }
     }
 
@@ -553,7 +606,10 @@ class MainActivity : ComponentActivity() {
                 profileClient.saveProfile(email, fullName, phone, role)
                     .onSuccess {
                         if (role.equals("beneficiary", ignoreCase = true)) {
-                            profileClient.saveBeneficiarySettings(monitoringConsent)
+                             profileClient.saveBeneficiarySettings(
+                                 monitoringConsent = monitoringConsent,
+                                 autoApproveCameraRequests = autoApproveCameraRequests,
+                             )
                                 .onFailure { setupMessage = it.message ?: "Could not save monitoring consent." }
                         }
                         if (setupMessage == null) {
@@ -645,8 +701,8 @@ class MainActivity : ComponentActivity() {
                 .onFailure { err ->
                     dashboardMessage = err.message
                 }
-            IncidentClient(this@MainActivity).fetchOwnIncidents()
-                .onSuccess { list -> sharedIncidents = list }
+            SnapshotClient(this@MainActivity).fetchPendingForBeneficiary()
+                .onSuccess { request -> pendingSnapshotRequest = request }
             dashboardLoading = false
         }
     }
@@ -668,36 +724,102 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun acknowledgeNotification(id: String) {
+    private fun loadChatMessages(partnerId: String) {
+        chatLoading = true
+        chatMessages = emptyList()
         lifecycleScope.launch {
-            notificationClient.acknowledge(id)
-                .onSuccess { refreshCaregiverData() }
+            chatRepository.buildChatMessages(partnerId, selectedRole.equals("caregiver", ignoreCase = true))
+                .onSuccess { chatMessages = it }
                 .onFailure { dashboardMessage = it.message }
+            chatLoading = false
         }
     }
 
-    private fun requestDemoSnapshotAndOpenCamera() {
-        val incidentId = selectedNotification?.incidentId ?: AudioMonitoringService.audioState.value.backendIncidentId
-        if (incidentId == null) {
-            demoSnapshotMessage = "Waiting for the incident to finish syncing to Supabase."
+    private fun decideSnapshotRequest(id: String, approved: Boolean) {
+        lifecycleScope.launch {
+            val client = SnapshotClient(this@MainActivity)
+            if (approved) {
+                client.decidePendingRequest(id, true)
+                    .onSuccess {
+                        client.fetchRequest(id)
+                            .onSuccess { request ->
+                                demoSnapshotRequest = request
+                                demoPhotoRequested = true
+                                demoPhotoDecision = "approved"
+                                demoPhotoRequestedAt = System.currentTimeMillis()
+                                demoPhotoDecisionAt = System.currentTimeMillis()
+                                pendingSnapshotRequest = null
+                                openCameraForBeneficiarySelfie()
+                            }
+                            .onFailure {
+                                Toast.makeText(this@MainActivity, "Could not load request: ${it.message}", Toast.LENGTH_LONG).show()
+                            }
+                    }
+                    .onFailure {
+                        Toast.makeText(this@MainActivity, "Could not save decision: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+            } else {
+                client.decidePendingRequest(id, false)
+                    .onSuccess {
+                        pendingSnapshotRequest = null
+                        refreshBeneficiaryData()
+                    }
+                    .onFailure {
+                        Toast.makeText(this@MainActivity, "Could not save decision: ${it.message}", Toast.LENGTH_LONG).show()
+                    }
+            }
+        }
+    }
+
+    private fun openCameraForBeneficiarySelfie() {
+        returnToPreviewAfterCamera = true
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            screen = AppScreen.CameraTest
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    private fun requestDemoSnapshotAndOpenCamera(forceApproval: Boolean) {
+        val liveIncidentId = AudioMonitoringService.audioState.value.backendIncidentId
+        val beneficiaryId = selectedChatPartner?.partnerId
+        if (beneficiaryId == null) {
+            demoSnapshotMessage = "No chat partner selected."
             return
         }
+        if (liveIncidentId != null) {
+            requestSnapshotForIncident(liveIncidentId, beneficiaryId, forceApproval)
+        } else {
+            demoSnapshotMessage = "Looking up latest incident..."
+            lifecycleScope.launch {
+                IncidentClient(this@MainActivity).fetchIncidentsForBeneficiary(beneficiaryId)
+                    .onSuccess { incidents ->
+                        val latest = incidents.lastOrNull()
+                        if (latest != null) {
+                            requestSnapshotForIncident(latest.id, beneficiaryId, forceApproval)
+                        } else {
+                            demoSnapshotMessage = "No incidents found. Trigger an alert first."
+                        }
+                    }
+                    .onFailure { demoSnapshotMessage = "Failed to look up incidents: ${it.message}" }
+            }
+        }
+    }
+
+    private fun requestSnapshotForIncident(incidentId: String, beneficiaryId: String, forceApproval: Boolean) {
         lifecycleScope.launch {
-            val beneficiaryId = previewBeneficiary?.beneficiaryId ?: JAMES_TEST_ID
             SnapshotClient(this@MainActivity)
                 .requestSnapshot(incidentId, beneficiaryId)
                 .onSuccess { request ->
                     demoSnapshotRequest = request
                     demoPhotoRequested = true
-                    demoPhotoDecision = "approved"
+                    demoPhotoDecision = if (forceApproval || request.approvalStatus == "approved") "approved" else null
                     demoPhotoRequestedAt = demoPhotoRequestedAt ?: System.currentTimeMillis()
                     demoPhotoDecisionAt = System.currentTimeMillis()
-                    demoSnapshotMessage = "Photo request logged. Capture a photo to upload it."
-                    returnToPreviewAfterCamera = true
-                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        screen = AppScreen.CameraTest
+                    if (forceApproval || request.approvalStatus == "approved") {
+                        demoSnapshotMessage = "Photo request approved. Waiting for beneficiary to capture the photo."
                     } else {
-                        cameraPermission.launch(Manifest.permission.CAMERA)
+                        demoSnapshotMessage = "Photo request is waiting for beneficiary approval."
                     }
                 }
                 .onFailure { demoSnapshotMessage = "Photo request failed: ${it.message}" }
@@ -771,8 +893,12 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "No phone number available.", Toast.LENGTH_SHORT).show()
             return
         }
-        val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${targetPhone.trim()}"))
-        startActivity(dialIntent)
+        try {
+            val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${targetPhone.trim()}"))
+            startActivity(dialIntent)
+        } catch (_: Exception) {
+            Toast.makeText(this, "No phone app available.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun copyToClipboard(text: String) {
@@ -814,10 +940,8 @@ class MainActivity : ComponentActivity() {
         monitoringConsent = false
         termsAccepted = false
         connectedCaregivers = emptyList()
-        sharedIncidents = emptyList()
         monitoredBeneficiaries = emptyList()
         caregiverNotifications = emptyList()
-        previewBeneficiary = null
         generatedPairingCode = null
         demoCaregiverLinked = false
         demoPhotoRequested = false
@@ -827,6 +951,9 @@ class MainActivity : ComponentActivity() {
         demoPhotoPath = null
         demoSnapshotRequest = null
         demoSnapshotMessage = null
+        autoApproveCameraRequests = true
+        chatMessages = emptyList()
+        selectedChatPartner = null
     }
 }
 
@@ -1061,6 +1188,7 @@ private fun SetupScreen(
     fullName: String,
     phone: String,
     consent: Boolean,
+    autoApproveCameraRequests: Boolean,
     termsAccepted: Boolean,
     microphoneGranted: Boolean,
     notificationsGranted: Boolean,
@@ -1069,6 +1197,7 @@ private fun SetupScreen(
     onFullNameChange: (String) -> Unit,
     onPhoneChange: (String) -> Unit,
     onConsentChange: (Boolean) -> Unit,
+    onAutoApproveCameraRequestsChange: (Boolean) -> Unit,
     onTermsChange: (Boolean) -> Unit,
     onOpenTerms: () -> Unit,
     onRequestPermissions: () -> Unit,
@@ -1122,6 +1251,13 @@ private fun SetupScreen(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = consent, onCheckedChange = onConsentChange)
                 Text("I consent to local audio monitoring & emergency alerts", style = MaterialTheme.typography.bodyMedium)
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = autoApproveCameraRequests, onCheckedChange = onAutoApproveCameraRequestsChange)
+                Column {
+                    Text("Auto-approve caregiver photo requests", style = MaterialTheme.typography.bodyMedium)
+                    Text("Recommended during setup for faster safety checks.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1266,7 +1402,6 @@ private fun BeneficiaryDashboard(
     onToggleMonitoring: () -> Unit,
     onSimulateSound: (category: String, label: String, confidence: Float, isEmergency: Boolean) -> Unit,
     caregivers: List<CaregiverMember>,
-    sharedIncidents: List<SharedIncident>,
     pairingCode: String?,
     loading: Boolean,
     message: String?,
@@ -1275,7 +1410,7 @@ private fun BeneficiaryDashboard(
     onSetPrimary: (String, String) -> Unit,
     onRemoveCaregiver: (String) -> Unit,
     onCall: (String) -> Unit,
-    onOpenCaregiverPreview: () -> Unit,
+    onOpenCaregiverChat: (ChatPreview) -> Unit,
     onLinkDemoCaregiver: () -> Unit,
     onOpenSettings: () -> Unit,
     onRefresh: () -> Unit,
@@ -1312,16 +1447,34 @@ private fun BeneficiaryDashboard(
 
         Card(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("Shared caregiver chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                if (sharedIncidents.isEmpty()) {
-                    Text("No shared incidents yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                Text("Caregiver Chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "View all alerts, photo requests, and status updates in a chat thread with your caregiver.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+                )
+                if (caregivers.isEmpty()) {
+                    Text("Connect to a caregiver first to start chatting.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
                 } else {
-                    sharedIncidents.forEach { incident ->
-                        Text(
-                            "${if (incident.severity == "high") "🚨" else "ℹ️"} ${incident.label} • ${(incident.confidence * 100).toInt()}% • ${incident.status}",
-                            color = if (incident.severity == "high") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
+                    caregivers.forEach { caregiver ->
+                        OutlinedButton(
+                            onClick = {
+                                onOpenCaregiverChat(
+                                    ChatPreview(
+                                        partnerId = caregiver.caregiverId,
+                                        partnerName = caregiver.name,
+                                        partnerPhone = caregiver.phone,
+                                        lastMessage = "",
+                                        lastTimestamp = System.currentTimeMillis(),
+                                        unreadCount = 0,
+                                    )
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                        ) {
+                            Text("💬 Chat with ${caregiver.name}")
+                        }
                     }
                 }
             }
@@ -1474,7 +1627,18 @@ private fun BeneficiaryDashboard(
                             onSetPrimary = { onSetPrimary(caregiver.connectionId, caregiver.caregiverId) },
                             onRemove = { onRemoveCaregiver(caregiver.connectionId) },
                             onCall = { onCall(caregiver.phone) },
-                            onOpenChat = onOpenCaregiverPreview,
+                            onOpenChat = {
+                                onOpenCaregiverChat(
+                                    ChatPreview(
+                                        partnerId = caregiver.caregiverId,
+                                        partnerName = caregiver.name,
+                                        partnerPhone = caregiver.phone,
+                                        lastMessage = "",
+                                        lastTimestamp = System.currentTimeMillis(),
+                                        unreadCount = 0,
+                                    )
+                                )
+                            },
                         )
                     }
                 }
@@ -1488,15 +1652,26 @@ private fun BeneficiaryDashboard(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("Caregiver Admin Preview", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("Caregiver Chat Preview", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Text(
-                    "Link a demo caregiver on this phone and preview exactly what the caregiver dashboard will show after an alert.",
+                    "Link a demo caregiver on this phone and preview the caregiver chat view.",
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onOpenCaregiverPreview) {
-                        Text("Preview Dashboard")
+                    OutlinedButton(onClick = {
+                        onOpenCaregiverChat(
+                            ChatPreview(
+                                partnerId = "demo",
+                                partnerName = "Demo Caregiver",
+                                partnerPhone = "",
+                                lastMessage = "",
+                                lastTimestamp = System.currentTimeMillis(),
+                                unreadCount = 0,
+                            )
+                        )
+                    }) {
+                        Text("Preview Chat")
                     }
                 }
                 Text(
@@ -1624,330 +1799,6 @@ private fun CaregiverRow(
     }
 }
 
-@Composable
-private fun CaregiverPreviewScreen(
-    beneficiaryName: String,
-    beneficiaryPhone: String,
-    audioState: LiveAudioState,
-    backendAlert: CaregiverNotification?,
-    demoCaregiverLinked: Boolean,
-    onBack: () -> Unit,
-    onLinkDemoCaregiver: () -> Unit,
-    onCall: () -> Unit,
-    photoRequested: Boolean,
-    photoDecision: String?,
-    photoRequestedAt: Long?,
-    photoDecisionAt: Long?,
-    photoPath: String?,
-    snapshotMessage: String?,
-    onOpenCamera: () -> Unit,
-) {
-    var showAlertDialog by remember { mutableStateOf(false) }
-    var shownAlertTimestamp by remember { mutableStateOf(audioState.alertHistory.lastOrNull()?.timestamp) }
-    var acknowledged by remember { mutableStateOf(false) }
-    var photoRequested by remember { mutableStateOf(photoRequested) }
-    var photoDecision by remember { mutableStateOf(photoDecision) }
-    var photoRequestedAt by remember { mutableStateOf(photoRequestedAt) }
-    var photoDecisionAt by remember { mutableStateOf(photoDecisionAt) }
-    var showFollowUpDialog by remember { mutableStateOf(photoPath != null) }
-    var showPhotoDetail by remember { mutableStateOf(false) }
-    var acknowledgedAt by remember { mutableStateOf<Long?>(null) }
-    val previewBitmap = remember(photoPath) { photoPath?.let { BitmapFactory.decodeFile(it) } }
-
-    LaunchedEffect(audioState.alertHistory) {
-        val event = audioState.alertHistory.lastOrNull()
-        val timestamp = event?.timestamp
-        if (event?.severity == SoundSeverity.High && timestamp != shownAlertTimestamp) {
-            shownAlertTimestamp = timestamp
-            showAlertDialog = true
-            acknowledged = false
-            photoRequested = false
-            photoDecision = null
-            photoRequestedAt = null
-            photoDecisionAt = null
-            acknowledgedAt = null
-        }
-    }
-
-    val latestEvent = audioState.alertHistory.lastOrNull()
-    val hasAlert = latestEvent != null || backendAlert != null
-    val alertLabel = latestEvent?.label ?: backendAlert?.soundLabel?.ifBlank { null }
-        ?: audioState.lastEmergencyLabel ?: audioState.displayLabel
-    val alertConfidence = latestEvent?.confidence ?: backendAlert?.confidence
-        ?: audioState.lastEmergencyConfidence ?: audioState.confidence
-    val alertTimestamp = latestEvent?.timestamp ?: audioState.lastEmergencyTimestamp
-    val alertTimeText = if (alertTimestamp != null) formatAlertTime(alertTimestamp) else backendAlert?.createdAt ?: "Unknown"
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(horizontal = 16.dp)
-            .verticalScroll(rememberScrollState()),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Button(onClick = onBack) { Text("← Back") }
-            Column(modifier = Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                Text(beneficiaryName, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("Caregiver chat", style = MaterialTheme.typography.bodySmall)
-            }
-            OutlinedButton(onClick = onCall) { Text("📞") }
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Linked caregiver", style = MaterialTheme.typography.labelLarge)
-                Text(
-                    if (demoCaregiverLinked) "Demo Caregiver" else "No demo caregiver linked",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = if (hasAlert) MaterialTheme.colorScheme.errorContainer
-                else MaterialTheme.colorScheme.surfaceVariant,
-            ),
-        ) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("${if (hasAlert) "🚨" else "🟢"} ${beneficiaryName}", fontWeight = FontWeight.Bold)
-                Text(beneficiaryPhone.ifBlank { "No phone number saved" }, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(12.dp))
-                if (hasAlert) {
-                    Text("ALERT: $alertLabel", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("Confidence: ${(alertConfidence * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium)
-                    Text("Detected at $alertTimeText", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
-                    Text(
-                        if (acknowledged) "Status: Acknowledged by caregiver" else "Status: Caregiver notification required",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                    Row(modifier = Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = onCall) { Text("Call") }
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            photoRequested = true
-                            photoDecision = null
-                            photoRequestedAt = System.currentTimeMillis()
-                        },
-                        enabled = !photoRequested,
-                        modifier = Modifier.padding(top = 8.dp),
-                    ) {
-                        Text(if (photoRequested) "Photo Request Sent" else "Request Verification Photo")
-                    }
-                    if (photoRequested) {
-                        Text(
-                            when (photoDecision) {
-                                "approved" -> "Beneficiary approved the verification photo request."
-                                "declined" -> "Beneficiary declined the verification photo request."
-                                else -> "Photo request pending beneficiary approval."
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                        if (photoDecision == null) {
-                            Row(
-                                modifier = Modifier.padding(top = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                Button(onClick = { photoDecision = "approved"; photoDecisionAt = System.currentTimeMillis(); onOpenCamera() }) { Text("Approve") }
-                                OutlinedButton(onClick = { photoDecision = "declined"; photoDecisionAt = System.currentTimeMillis() }) { Text("Decline") }
-                            }
-                        }
-                        snapshotMessage?.let {
-                            Text(
-                                it,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (it.contains("failed", ignoreCase = true)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(top = 8.dp),
-                            )
-                        }
-                    }
-                } else {
-                    Text("No active alerts", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    Text("The caregiver would see this beneficiary as safe while monitoring is active.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
-                }
-            }
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Messages", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(10.dp))
-                if (audioState.alertHistory.isEmpty() && backendAlert == null) {
-                    ChatBubble(
-                        text = "SoundGuard • Monitoring active\nNo incidents to review",
-                        fromSystem = true,
-                        timestamp = null,
-                    )
-                } else {
-                    audioState.alertHistory.forEach { event ->
-                        ChatBubble(
-                            text = "${if (event.severity == SoundSeverity.High) "🚨" else "ℹ️"} ${event.label}\nConfidence: ${(event.confidence * 100).toInt()}%",
-                            fromSystem = true,
-                            timestamp = event.timestamp,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                    }
-                    if (audioState.alertHistory.isEmpty() && backendAlert != null) {
-                        ChatBubble(
-                            text = "🚨 ${backendAlert.soundLabel.ifBlank { "Alert" }}\nConfidence: ${(backendAlert.confidence * 100).toInt()}%\nStatus: ${backendAlert.status}",
-                            fromSystem = true,
-                            timestamp = null,
-                        )
-                    }
-                }
-                if (photoRequested) {
-                    Spacer(Modifier.height(8.dp))
-                    ChatBubble(text = "Verification photo requested by caregiver.", fromSystem = false, timestamp = photoRequestedAt)
-                if (photoDecision != null) {
-                        Spacer(Modifier.height(8.dp))
-                        ChatBubble(
-                            text = if (photoDecision == "approved") "Beneficiary approved the request. Camera opened." else "Beneficiary declined the request.",
-                            fromSystem = true,
-                            timestamp = photoDecisionAt,
-                        )
-                    }
-                    if (photoDecision == "approved" && photoPath != null) {
-                        Spacer(Modifier.height(8.dp))
-                        ChatBubble(
-                            text = "Verification photo captured and ready for review.",
-                            fromSystem = true,
-                            timestamp = photoDecisionAt,
-                        )
-                        if (previewBitmap != null) {
-                            Spacer(Modifier.height(8.dp))
-                            Image(
-                                bitmap = previewBitmap.asImageBitmap(),
-                                contentDescription = "Verification photo",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(220.dp)
-                                    .clickable { showPhotoDetail = true },
-                            )
-                            TextButton(
-                                onClick = { showPhotoDetail = true },
-                                modifier = Modifier.align(Alignment.CenterHorizontally),
-                            ) {
-                                Text("View photo in detail")
-                            }
-                        }
-                    }
-                }
-                if (acknowledged) {
-                    Spacer(Modifier.height(8.dp))
-                    ChatBubble(text = "Caregiver acknowledged the alert.", fromSystem = false, timestamp = acknowledgedAt)
-                }
-            }
-        }
-
-        if (showAlertDialog && hasAlert) {
-            AlertDialog(
-                onDismissRequest = { showAlertDialog = false },
-                title = { Text("🚨 SoundGuard Alert") },
-                text = {
-                    Text(
-                        "$alertLabel detected for $beneficiaryName.\n\n" +
-                            "Confidence: ${(alertConfidence * 100).toInt()}%\n" +
-                            "Time: $alertTimeText\n\n" +
-                            "Check on the beneficiary and request a verification photo if authorized.",
-                    )
-                },
-                confirmButton = {
-                     TextButton(onClick = { showAlertDialog = false }) { Text("Close") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showAlertDialog = false; onCall() }) { Text("Call") }
-                },
-            )
-        }
-
-        if (showFollowUpDialog && photoPath != null) {
-            AlertDialog(
-                onDismissRequest = { showFollowUpDialog = false },
-                title = { Text("Verification complete") },
-                text = {
-                    Text(
-                        "The verification photo is ready. For further confirmation, SoundGuard recommends calling or video calling $beneficiaryName.",
-                    )
-                },
-                confirmButton = {
-                    Button(onClick = { showFollowUpDialog = false; onCall() }) { Text("Call $beneficiaryName") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showFollowUpDialog = false }) { Text("Not now") }
-                },
-            )
-        }
-
-        if (showPhotoDetail && previewBitmap != null) {
-            AlertDialog(
-                onDismissRequest = { showPhotoDetail = false },
-                title = { Text("Verification photo") },
-                text = {
-                    Image(
-                        bitmap = previewBitmap.asImageBitmap(),
-                        contentDescription = "Detailed verification photo",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxWidth().height(420.dp),
-                    )
-                },
-                confirmButton = {
-                    TextButton(onClick = { showPhotoDetail = false }) { Text("Close") }
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun ChatBubble(text: String, fromSystem: Boolean, timestamp: Long?) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = if (fromSystem) Arrangement.Start else Arrangement.End,
-    ) {
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = if (fromSystem) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primaryContainer,
-            ),
-            shape = RoundedCornerShape(16.dp),
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text(text, style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    formatAlertTime(timestamp),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-        }
-    }
-}
-
-private fun formatAlertTime(timestamp: Long?): String {
-    if (timestamp == null) return "--"
-    return SimpleDateFormat("h:mm:ss a", Locale.getDefault()).format(Date(timestamp))
-}
-
 // -------------------------------------------------------------------------------------------------
 // CAREGIVER DASHBOARD
 // -------------------------------------------------------------------------------------------------
@@ -1962,10 +1813,7 @@ private fun CaregiverDashboard(
     onConnectBeneficiary: (String) -> Unit,
     onRemoveBeneficiary: (String) -> Unit,
     onCall: (String) -> Unit,
-    onOpenBeneficiary: (MonitoredBeneficiary) -> Unit,
-    notifications: List<CaregiverNotification>,
-    onAcknowledgeNotification: (String) -> Unit,
-    onOpenNotification: (CaregiverNotification) -> Unit,
+    onOpenBeneficiaryChat: (ChatPreview) -> Unit,
     onOpenSettings: () -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -2036,35 +1884,33 @@ private fun CaregiverDashboard(
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("Notification timeline", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                if (notifications.isEmpty()) {
-                    Text("No backend notifications yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 6.dp))
+                Text("Beneficiary Chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "View all alerts, photo requests, and status updates for each connected beneficiary.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+                )
+                if (beneficiaries.isEmpty()) {
+                    Text("Connect to a beneficiary first to start chatting.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
                 } else {
-                    notifications.take(10).forEach { notification ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp)
-                                .clickable { onOpenNotification(notification) }
-                                .background(
-                                    if (notification.status != "acknowledged") MaterialTheme.colorScheme.errorContainer
-                                    else MaterialTheme.colorScheme.surface,
-                                    RoundedCornerShape(12.dp),
+                    beneficiaries.forEach { beneficiary ->
+                        OutlinedButton(
+                            onClick = {
+                                onOpenBeneficiaryChat(
+                                    ChatPreview(
+                                        partnerId = beneficiary.beneficiaryId,
+                                        partnerName = beneficiary.name,
+                                        partnerPhone = beneficiary.phone,
+                                        lastMessage = "",
+                                        lastTimestamp = System.currentTimeMillis(),
+                                        unreadCount = 0,
+                                    )
                                 )
-                                .padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    notification.soundLabel.ifBlank { "Incident ${notification.incidentId.take(8)}" },
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                Text(
-                                    "${notification.severity.ifBlank { "alert" }} • ${(notification.confidence * 100).toInt()}% • ${notification.status}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                            TextButton(onClick = { onOpenNotification(notification) }) { Text("Open Chat") }
+                            Text("💬 Chat with ${beneficiary.name}")
                         }
                     }
                 }
@@ -2097,7 +1943,18 @@ private fun CaregiverDashboard(
                             beneficiary = beneficiary,
                             onRemove = { onRemoveBeneficiary(beneficiary.connectionId) },
                             onCall = { onCall(beneficiary.phone) },
-                            onOpen = { onOpenBeneficiary(beneficiary) },
+                            onOpen = {
+                                onOpenBeneficiaryChat(
+                                    ChatPreview(
+                                        partnerId = beneficiary.beneficiaryId,
+                                        partnerName = beneficiary.name,
+                                        partnerPhone = beneficiary.phone,
+                                        lastMessage = "",
+                                        lastTimestamp = System.currentTimeMillis(),
+                                        unreadCount = 0,
+                                    )
+                                )
+                            },
                         )
                     }
                 }
@@ -2169,8 +2026,10 @@ private fun SettingsScreen(
     currentRole: String,
     microphoneGranted: Boolean,
     notificationsGranted: Boolean,
+    autoApproveCameraRequests: Boolean,
     onFullNameChange: (String) -> Unit,
     onPhoneChange: (String) -> Unit,
+    onAutoApproveCameraRequestsChange: (Boolean) -> Unit,
     onSaveProfile: () -> Unit,
     onRequestSwitchRole: () -> Unit,
     onOpenTerms: () -> Unit,
@@ -2224,6 +2083,23 @@ private fun SettingsScreen(
                 Spacer(Modifier.height(12.dp))
                 Button(onClick = onSaveProfile, modifier = Modifier.align(Alignment.End)) {
                     Text("Save Changes")
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        if (currentRole.equals("beneficiary", ignoreCase = true)) {
+            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Auto-approve photo requests", fontWeight = FontWeight.Bold)
+                        Text("Caregiver verification photos open immediately without waiting for approval.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Checkbox(checked = autoApproveCameraRequests, onCheckedChange = onAutoApproveCameraRequestsChange)
                 }
             }
         }

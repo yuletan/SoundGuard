@@ -26,6 +26,56 @@ class AuthClient(context: Context) {
         preferences.edit().clear().apply()
     }
 
+    suspend fun getToken(): String = withContext(Dispatchers.IO) {
+        val current = accessToken()
+        val issuedAt = preferences.getLong("token_issued_at", 0L)
+        val ageMs = System.currentTimeMillis() - issuedAt
+        if (current != null && ageMs < 50 * 60 * 1000) return@withContext current
+
+        val refreshToken = preferences.getString("refresh_token", null)
+        if (refreshToken != null) {
+            val refreshed = refreshAccessToken(refreshToken).getOrNull()
+            if (refreshed != null) return@withContext refreshed
+        }
+        error("Session expired. Please sign in again.")
+    }
+
+    private suspend fun refreshAccessToken(refreshToken: String): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val baseUrl = BuildConfig.SUPABASE_URL.trimEnd('/')
+            val endpoint = "$baseUrl/auth/v1/token?grant_type=refresh_token"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+            }
+            try {
+                connection.outputStream.use { it.write(JSONObject().apply { put("refresh_token", refreshToken) }.toString().toByteArray()) }
+                val code = connection.responseCode
+                val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (code !in 200..299) error("Token refresh failed HTTP $code: $body")
+                val json = JSONObject(body)
+                val newAccessToken = json.optString("access_token")
+                val newRefreshToken = json.optString("refresh_token")
+                if (newAccessToken.isBlank()) error("Token refresh returned empty access_token")
+                preferences.edit()
+                    .putString("access_token", newAccessToken)
+                    .putLong("token_issued_at", System.currentTimeMillis())
+                    .apply()
+                if (newRefreshToken.isNotBlank()) {
+                    preferences.edit().putString("refresh_token", newRefreshToken).apply()
+                }
+                newAccessToken
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
     suspend fun sendOtp(email: String): Result<Unit> = withContext(Dispatchers.IO) {
         request("/auth/v1/otp", JSONObject().apply {
             put("email", email.trim())
@@ -41,12 +91,17 @@ class AuthClient(context: Context) {
         }).map { response ->
             val accessToken = response.optString("access_token")
             if (accessToken.isBlank()) error("No session returned by Supabase")
+            val refreshToken = response.optString("refresh_token")
             val userId = response.optJSONObject("user")?.optString("id").orEmpty()
             if (userId.isBlank()) error("No user id returned by Supabase")
             preferences.edit()
                 .putString("access_token", accessToken)
                 .putString("user_id", userId)
+                .putLong("token_issued_at", System.currentTimeMillis())
                 .apply()
+            if (refreshToken.isNotBlank()) {
+                preferences.edit().putString("refresh_token", refreshToken).apply()
+            }
         }
     }
 
@@ -70,13 +125,18 @@ class AuthClient(context: Context) {
             val callbackError = values["error_description"] ?: values["error"]
             if (!callbackError.isNullOrBlank()) error("Google sign-in failed: $callbackError")
             val token = values["access_token"] ?: error("Google sign-in returned no access token")
+            val refreshToken = values["refresh_token"].orEmpty()
             val user = fetchUser(token)
             val userId = user.optString("id")
             if (userId.isBlank()) error("Google sign-in returned no user id")
             preferences.edit()
                 .putString("access_token", token)
                 .putString("user_id", userId)
+                .putLong("token_issued_at", System.currentTimeMillis())
                 .apply()
+            if (refreshToken.isNotBlank()) {
+                preferences.edit().putString("refresh_token", refreshToken).apply()
+            }
         }
     }
 
