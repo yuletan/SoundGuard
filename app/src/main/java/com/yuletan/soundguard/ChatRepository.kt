@@ -46,24 +46,7 @@ class ChatRepository(context: Context) {
                     }
                 }
 
-                val latestIncidentId = notifications.lastOrNull()?.incidentId
-                if (latestIncidentId != null) {
-                    val snapshots = snapshotClient.fetchSnapshotsForIncident(latestIncidentId).getOrNull().orEmpty()
-                    val bestSnapshot = pickBestSnapshot(snapshots)
-                    if (bestSnapshot != null) {
-                        val expiresTs = bestSnapshot.expiresAt?.let { parseIsoTimestamp(it) }
-                        val snapshotTs = expiresTs?.minus(600_000) ?: System.currentTimeMillis()
-                        val isExpired = expiresTs != null && System.currentTimeMillis() > expiresTs
-                        messages.add(
-                            ChatMessage.PhotoRequest(
-                                incidentId = latestIncidentId,
-                                status = bestSnapshot.uploadStatus ?: bestSnapshot.approvalStatus ?: "requested",
-                                timestamp = snapshotTs,
-                                photoUrl = if (!isExpired) bestSnapshot.signedUrl else null,
-                            )
-                        )
-                    }
-                }
+                appendSnapshots(messages, notifications.map { it.incidentId }.distinct())
             } else {
                 val incidents = incidentClient.fetchOwnIncidents().getOrNull().orEmpty()
                 for (incident in incidents) {
@@ -80,27 +63,53 @@ class ChatRepository(context: Context) {
                     )
                 }
 
-                val latestIncidentId = incidents.lastOrNull()?.id
-                if (latestIncidentId != null) {
-                    val snapshots = snapshotClient.fetchSnapshotsForIncident(latestIncidentId).getOrNull().orEmpty()
-                    val bestSnapshot = pickBestSnapshot(snapshots)
-                    if (bestSnapshot != null) {
-                        val expiresTs = bestSnapshot.expiresAt?.let { parseIsoTimestamp(it) }
-                        val snapshotTs = expiresTs?.minus(600_000) ?: System.currentTimeMillis()
-                        val isExpired = expiresTs != null && System.currentTimeMillis() > expiresTs
-                        messages.add(
-                            ChatMessage.PhotoRequest(
-                                incidentId = latestIncidentId,
-                                status = bestSnapshot.uploadStatus ?: bestSnapshot.approvalStatus ?: "requested",
-                                timestamp = snapshotTs,
-                                photoUrl = if (!isExpired) bestSnapshot.signedUrl else null,
-                            )
-                        )
-                    }
-                }
+                appendSnapshots(messages, incidents.map { it.id }.distinct())
             }
 
             messages.sortedBy { it.timestamp }
+        }
+    }
+
+    private suspend fun appendSnapshots(messages: MutableList<ChatMessage>, incidentIds: List<String>) {
+        for (incidentId in incidentIds) {
+            val allSnapshots = snapshotClient.fetchSnapshotsForIncident(incidentId)
+                .getOrNull().orEmpty()
+            if (allSnapshots.isEmpty()) continue
+            val now = System.currentTimeMillis()
+            val activeSnapshots = allSnapshots.filter { snapshot ->
+                snapshot.uploadStatus != "expired" &&
+                    (snapshot.expiresAt?.let { parseIsoTimestamp(it) } ?: Long.MAX_VALUE) > now
+            }
+            val expiredSnapshots = allSnapshots.filter { snapshot ->
+                snapshot.uploadStatus == "expired" ||
+                    (snapshot.expiresAt?.let { parseIsoTimestamp(it) } ?: Long.MAX_VALUE) <= now
+            }
+            val bestSnapshot = pickBestSnapshot(activeSnapshots)
+                ?: pickBestSnapshot(expiredSnapshots)
+                ?: pickBestSnapshot(allSnapshots)
+                ?: continue
+            val requestedTs = bestSnapshot.requestedAt?.let { parseIsoTimestamp(it) }
+            val expiresTs = bestSnapshot.expiresAt?.let { parseIsoTimestamp(it) }
+            val snapshotTs = requestedTs ?: expiresTs?.minus(600_000) ?: System.currentTimeMillis()
+            val isExpired = bestSnapshot.uploadStatus == "expired" ||
+                (expiresTs != null && expiresTs <= now)
+            val displayStatus = when {
+                isExpired -> "expired"
+                bestSnapshot.uploadStatus == "uploaded" -> "uploaded"
+                bestSnapshot.approvalStatus == "approved" -> "approved"
+                bestSnapshot.approvalStatus == "declined" -> "declined"
+                bestSnapshot.uploadStatus == "failed" -> "failed"
+                else -> bestSnapshot.uploadStatus ?: bestSnapshot.approvalStatus ?: "requested"
+            }
+            messages.add(
+                ChatMessage.PhotoRequest(
+                    incidentId = incidentId,
+                    status = displayStatus,
+                    timestamp = snapshotTs,
+                    photoUrl = if (isExpired) null else bestSnapshot.signedUrl,
+                    expiresAt = expiresTs,
+                )
+            )
         }
     }
 

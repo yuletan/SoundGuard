@@ -18,6 +18,7 @@ sealed class ChatMessage {
         val status: String,
         override val timestamp: Long,
         val photoUrl: String? = null,
+        val expiresAt: Long? = null,
     ) : ChatMessage()
 
     data class Acknowledgment(
