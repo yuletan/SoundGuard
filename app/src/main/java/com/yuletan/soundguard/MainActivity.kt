@@ -68,6 +68,7 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -1159,55 +1160,45 @@ private fun LoginScreen(
 
 @Composable
 private fun RoleSelection(onRoleSelected: (String) -> Unit) {
+    var selectedRole by remember { mutableStateOf("Beneficiary") }
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
+        modifier = Modifier.fillMaxSize().padding(24.dp).statusBarsPadding(),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Outlined.Shield, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Select Your Role", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        }
-        Text(
-            "How do you plan to use SoundGuard?",
-            modifier = Modifier.padding(top = 8.dp, bottom = 32.dp),
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Spacer(Modifier.height(44.dp))
+        Text("Who's this for?", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("You can invite the other side to connect once you're set up.", modifier = Modifier.padding(top = 12.dp, bottom = 48.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+        RoleOptionCard(
+            title = "I want to be monitored",
+            description = "Emergency sounds get detected and sent to family who can check on you.",
+            symbol = "♡", selected = selectedRole == "Beneficiary", onClick = { selectedRole = "Beneficiary" },
         )
-
-        Card(
-            onClick = { onRoleSelected("Beneficiary") },
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Text("I Need Monitoring (Beneficiary)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "This device will monitor environmental sounds locally and alert my caregivers when assistance is needed.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-        }
-
         Spacer(Modifier.height(16.dp))
+        RoleOptionCard(
+            title = "I'm a caregiver",
+            description = "Get notified if someone you care for may be in danger.",
+            symbol = "♧", selected = selectedRole == "Caregiver", onClick = { selectedRole = "Caregiver" },
+        )
+        Spacer(Modifier.height(24.dp))
+        Button(onClick = { onRoleSelected(selectedRole) }, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(50)) { Text("Continue", fontWeight = FontWeight.Bold) }
+    }
+}
 
-        Card(
-            onClick = { onRoleSelected("Caregiver") },
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-        ) {
-            Column(modifier = Modifier.padding(20.dp)) {
-                Text("I Am a Caregiver", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "I will link with family members or beneficiaries to receive instant alerts, view status timelines, and verify safety.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
+@Composable
+private fun RoleOptionCard(title: String, description: String, symbol: String, selected: Boolean, onClick: () -> Unit) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(210.dp),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface),
+        border = if (selected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    ) {
+        Column(modifier = Modifier.padding(28.dp)) {
+            Text(symbol, fontSize = 38.sp, color = if (selected) Color.White else MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(12.dp))
+            Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = if (selected) Color.White else MaterialTheme.colorScheme.onSurface)
+            Spacer(Modifier.height(6.dp))
+            Text(description, style = MaterialTheme.typography.bodyMedium, color = if (selected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -1480,7 +1471,7 @@ private fun BeneficiaryDashboard(
         ) {
         HomeTopBar(
             title = fullName.ifBlank { "Beneficiary" },
-            roleSubtitle = "Beneficiary Mode",
+            roleSubtitle = "Beneficiary",
             onOpenSettings = onOpenSettings,
         )
 
@@ -1519,85 +1510,23 @@ private fun BeneficiaryDashboard(
         // Live Monitoring Status Card
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = when {
-                audioState.isEmergency -> MaterialTheme.colorScheme.dangerTint
-                audioState.isMonitoring -> MaterialTheme.colorScheme.successTint
-                else -> MaterialTheme.colorScheme.warningTint
-            }),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                         StatusChip(
-                             when {
-                                 audioState.isEmergency -> "Escalated"
-                                 audioState.isMonitoring -> "Monitoring active"
-                                 else -> "Monitoring paused"
-                             },
-                             when {
-                                 audioState.isEmergency -> IncidentStatusTone.Danger
-                                 audioState.isMonitoring -> IncidentStatusTone.Success
-                                 else -> IncidentStatusTone.Warning
-                             },
-                         )
-                         Text(
-                            when {
-                                 audioState.isEmergency -> "Emergency sound detected"
-                                 audioState.isMonitoring -> "Active monitoring"
-                                 else -> "Monitoring paused"
-                            },
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                        )
-                        }
-                        Text(
-                            when {
-                                audioState.isEmergency -> "Alert event detected: ${audioState.displayLabel}"
-                                audioState.isMonitoring -> "Detected: ${audioState.displayLabel} (${(audioState.confidence * 100).toInt()}%)"
-                                else -> "Tap Start to begin continuous local sound monitoring"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
-                    Button(
-                        onClick = onToggleMonitoring,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (audioState.isMonitoring) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                        ),
-                    ) {
-                        Text(if (audioState.isMonitoring) "Stop" else "Start")
+                    Box(modifier = Modifier.size(86.dp).border(3.dp, MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) { Icon(Icons.Outlined.Mic, contentDescription = null, modifier = Modifier.size(36.dp)) }
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text(if (audioState.isEmergency) "Sound detected" else if (audioState.isMonitoring) "Listening" else "Monitoring paused", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                        Text(if (audioState.isEmergency) "We’re alerting your caregivers" else if (audioState.isMonitoring) "All quiet right now · Details" else "Start when you’re ready", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-
-                if (audioState.isMonitoring) {
-                    Spacer(Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("Live Mic Level:", style = MaterialTheme.typography.labelSmall)
-                        Text(
-                            "${(audioState.amplitude * 100).toInt()}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = if (audioState.isEmergency) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    LinearProgressIndicator(
-                        progress = { audioState.amplitude },
-                        modifier = Modifier.fillMaxWidth().height(10.dp),
-                        color = if (audioState.isEmergency) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                    )
-                }
-                ConfidenceBar(audioState.confidence, "${audioState.displayLabel} confidence")
+                Spacer(Modifier.height(16.dp))
+                OutlinedButton(onClick = onToggleMonitoring, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(50)) { Text(if (audioState.isMonitoring) "Stop monitoring" else "Start monitoring", fontWeight = FontWeight.Bold) }
             }
         }
 
@@ -1611,7 +1540,8 @@ private fun BeneficiaryDashboard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Caregiver Team (${caregivers.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Your caregivers", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("+ Add", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
                 }
 
                 if (caregivers.isEmpty()) {
@@ -1733,47 +1663,23 @@ private fun CaregiverRow(
     onOpenChat: () -> Unit,
 ) {
     Card(
+        onClick = onOpenChat,
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column {
+        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(52.dp).background(MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) { Text(caregiver.name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold) }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(caregiver.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
-                    Text(caregiver.phone.ifBlank { caregiver.email }, style = MaterialTheme.typography.bodySmall)
+                    if (caregiver.isPrimary) { Spacer(Modifier.width(8.dp)); StatusChip("Primary") }
                 }
-                if (caregiver.isPrimary) {
-                    Text("Primary", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
-                } else {
-                    Text("#${caregiver.escalationOrder} Backup", color = Color.Gray, style = MaterialTheme.typography.labelMedium)
-                }
+                Text("Tap to open chat", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Spacer(Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                if (caregiver.phone.isNotBlank()) {
-                    OutlinedButton(onClick = onCall, modifier = Modifier.padding(end = 6.dp)) {
-                        Text("Call")
-                    }
-                }
-                if (!caregiver.isPrimary) {
-                    TextButton(onClick = onSetPrimary) {
-                        Text("Make Primary")
-                    }
-                }
-                TextButton(onClick = onRemove) {
-                    Text("Remove", color = MaterialTheme.colorScheme.error)
-                }
-            }
-            OutlinedButton(
-                onClick = onOpenChat,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            ) {
-                Text("Open Chat")
-            }
+            if (caregiver.phone.isNotBlank()) IconButton(onClick = onCall) { Text("☎", fontSize = 22.sp) }
+            IconButton(onClick = { if (caregiver.isPrimary) onRemove() else onSetPrimary() }) { Text("⋮", fontSize = 24.sp) }
         }
     }
 }
@@ -1810,54 +1716,35 @@ private fun CaregiverDashboard(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp)
+            .statusBarsPadding()
             .verticalScroll(rememberScrollState()),
     ) {
             HomeTopBar(
             title = fullName.ifBlank { "Caregiver" },
-            roleSubtitle = "Caregiver Mode",
+            roleSubtitle = "Caregiver",
              onOpenSettings = onOpenSettings,
              )
 
         // Connect Beneficiary Card
         Card(
             modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text("Connect to Beneficiary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    "Enter the 6-character code displayed on the beneficiary's device.",
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OtpCodeInput(
-                        value = codeInput,
-                        onValueChange = { codeInput = it },
-                        modifier = Modifier.weight(1f),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Button(
-                        onClick = {
-                            if (codeInput.length == 6) {
-                                onConnectBeneficiary(codeInput)
-                                codeInput = ""
-                            }
-                        },
-                        enabled = !loading && codeInput.length == 6,
-                        modifier = Modifier.height(52.dp),
-                    ) {
-                        Text("Connect")
-                    }
-                }
+                Text("Connect a beneficiary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                OtpCodeInput(value = codeInput, onValueChange = { codeInput = it }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = { if (codeInput.length == 6) { onConnectBeneficiary(codeInput); codeInput = "" } }, enabled = !loading && codeInput.length == 6, modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(50)) { Text("Connect", fontWeight = FontWeight.Bold) }
+                TextButton(onClick = {}, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Scan QR instead") }
             }
         }
 
         Spacer(Modifier.height(20.dp))
 
+        /* Chat is opened directly from the people list, matching the redesign. */
+        /*
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("Beneficiary Chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
@@ -1892,6 +1779,7 @@ private fun CaregiverDashboard(
                 }
             }
         }
+        */
 
         // Beneficiaries List
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -1901,7 +1789,7 @@ private fun CaregiverDashboard(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Monitored Beneficiaries (${beneficiaries.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Text("People you monitor", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
 
                 if (beneficiaries.isEmpty()) {
@@ -1956,35 +1844,20 @@ private fun BeneficiaryRow(
     onOpen: () -> Unit,
 ) {
     Card(
+        onClick = onOpen,
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(beneficiary.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
-                    Text(beneficiary.phone.ifBlank { beneficiary.email }, style = MaterialTheme.typography.bodySmall)
-                }
-                TextButton(onClick = onOpen) { Text("Open chat") }
-                if (beneficiary.isPrimary) {
-                    Text("Primary Caregiver", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
-                }
+        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(52.dp).background(MaterialTheme.colorScheme.primary, CircleShape), contentAlignment = Alignment.Center) { Text(beneficiary.name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold) }
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(beneficiary.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                StatusChip(if (beneficiary.isPrimary) "All quiet" else "Awaiting response", if (beneficiary.isPrimary) IncidentStatusTone.Success else IncidentStatusTone.Warning)
             }
-            Spacer(Modifier.height(8.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                if (beneficiary.phone.isNotBlank()) {
-                    OutlinedButton(onClick = onCall, modifier = Modifier.padding(end = 6.dp)) {
-                        Text("Call")
-                    }
-                }
-                TextButton(onClick = onRemove) {
-                    Text("Remove", color = MaterialTheme.colorScheme.error)
-                }
-            }
+            if (beneficiary.phone.isNotBlank()) IconButton(onClick = onCall) { Text("☎", fontSize = 22.sp) }
+            IconButton(onClick = onRemove) { Text("⋮", fontSize = 24.sp) }
         }
     }
 }
