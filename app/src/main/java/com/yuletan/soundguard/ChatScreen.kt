@@ -17,8 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -36,6 +34,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.Error
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -101,7 +105,7 @@ fun ChatScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             androidx.compose.material3.IconButton(onClick = onBack) {
-                Text("←", style = MaterialTheme.typography.titleLarge)
+                androidx.compose.material3.Icon(Icons.Outlined.ArrowBack, contentDescription = "Go back")
             }
             Box(
                 modifier = Modifier
@@ -133,12 +137,12 @@ fun ChatScreen(
             }
             if (isCaregiverView) {
                 OutlinedButton(onClick = onRequestPhoto) {
-                    Text("📷", fontSize = 16.sp)
+                    androidx.compose.material3.Icon(Icons.Outlined.CameraAlt, contentDescription = "Request photo")
                 }
                 Spacer(Modifier.width(6.dp))
             }
             OutlinedButton(onClick = onCall) {
-                Text("📞", fontSize = 16.sp)
+                androidx.compose.material3.Icon(Icons.Outlined.Call, contentDescription = "Call")
             }
         }
 
@@ -165,7 +169,7 @@ fun ChatScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .background(Color(0xFFF5F5F5)),
+                    .background(MaterialTheme.colorScheme.background),
                 state = listState,
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -222,7 +226,7 @@ fun ChatScreen(
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
                 ) {
-                    Text("📞 Call", fontSize = 13.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) { androidx.compose.material3.Icon(Icons.Outlined.Call, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Call", fontSize = 13.sp) }
                 }
                 if (isCaregiverView) {
                     Spacer(Modifier.width(8.dp))
@@ -230,7 +234,7 @@ fun ChatScreen(
                         onClick = onRequestPhoto,
                         modifier = Modifier.weight(1f),
                     ) {
-                        Text("📷 Request Photo", fontSize = 13.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) { androidx.compose.material3.Icon(Icons.Outlined.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Request Photo", fontSize = 13.sp) }
                     }
                 }
             }
@@ -303,23 +307,15 @@ private fun IncidentBubble(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        "${if (isHigh) "🚨" else "ℹ️"} ${message.label}",
+                        message.label,
                         fontWeight = FontWeight.Bold,
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (isHigh) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                     )
-                    Text(
-                        message.status,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    StatusChip(statusLabel(message.status), statusTone(message.status))
                 }
                 Spacer(Modifier.height(4.dp))
-                Text(
-                    "Confidence: ${(message.confidence * 100).toInt()}% • ${message.severity}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                ConfidenceBar(message.confidence, "${message.label} · ${severityLabel(message.severity)}")
                 if (message.snapshotUrl != null) {
                     Spacer(Modifier.height(8.dp))
                     val context = LocalContext.current
@@ -360,6 +356,25 @@ private fun IncidentBubble(
     }
 }
 
+private fun statusLabel(status: String): String = when (status.lowercase(Locale.ROOT)) {
+    "waiting_user", "detected" -> "Waiting for response"
+    "caregiver_notified" -> "Caregiver notified"
+    "escalated" -> "Escalated"
+    "caregiver_acknowledged", "acknowledged" -> "Acknowledged"
+    "resolved" -> "Resolved"
+    "false_alarm" -> "False alarm"
+    else -> status.replace('_', ' ').replaceFirstChar { it.uppercase() }
+}
+
+private fun statusTone(status: String): IncidentStatusTone = when (statusLabel(status)) {
+    "Resolved", "Acknowledged" -> IncidentStatusTone.Success
+    "Escalated" -> IncidentStatusTone.Danger
+    "False alarm" -> IncidentStatusTone.Neutral
+    else -> IncidentStatusTone.Warning
+}
+
+private fun severityLabel(severity: String): String = severity.replaceFirstChar { it.uppercase() }
+
 @Composable
 private fun PhotoRequestBubble(message: ChatMessage.PhotoRequest, onPhotoClick: () -> Unit) {
     val statusText = when (message.status) {
@@ -386,7 +401,7 @@ private fun PhotoRequestBubble(message: ChatMessage.PhotoRequest, onPhotoClick: 
         ) {
             Column(modifier = Modifier.padding(10.dp)) {
                 Text(
-                    "📷 $statusText",
+                    statusText,
                     style = MaterialTheme.typography.bodySmall,
                     color = statusColor,
                 )

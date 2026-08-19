@@ -117,6 +117,15 @@ class AudioMonitoringService : Service() {
                 amplitude = if (isEmergency) 0.88f else if (isAmbient) 0.08f else 0.55f,
             )
         }
+
+        fun respondToIncident(response: BeneficiaryResponse) {
+            val now = System.currentTimeMillis()
+            val incident = incidentEngine.respondAsBeneficiary(response, now) ?: return
+            _audioState.value = _audioState.value.copy(
+                activeIncident = incident,
+                isEmergency = false,
+            )
+        }
     }
 
     private val serviceJob = Job()
