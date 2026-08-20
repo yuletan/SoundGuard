@@ -1403,26 +1403,24 @@ private fun LoginScreen(
         Spacer(Modifier.height(12.dp))
 
         if (otpSent) {
-            OutlinedTextField(
-                value = otp,
-                onValueChange = onOtpChange,
-                label = { Text("6-digit verification code") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-            )
-            Spacer(Modifier.height(12.dp))
+            Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Enter the 6-digit code sent to your email", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(10.dp))
+                OtpPillInput(value = otp, onValueChange = onOtpChange, length = 6, modifier = Modifier.fillMaxWidth())
+            }
+            Spacer(Modifier.height(16.dp))
             Button(
                 onClick = onVerifyOtp,
-                enabled = !busy && otp.trim().isNotEmpty(),
+                enabled = !busy && otp.filter(Char::isDigit).length == 6,
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(999.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
+                    disabledContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.25f),
                 ),
             ) {
-                Text("Verify Code & Sign In", fontWeight = FontWeight.Bold)
+                Text("Verify", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             }
         } else {
             Button(
@@ -2776,57 +2774,70 @@ private fun CaregiverDashboard(
 
                 Spacer(Modifier.height(14.dp))
 
-                // 2. People You Monitor Card matching Mockup Frame 2
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text(
-                            text = "People you monitor",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface,
-                        )
-
-                        if (beneficiaries.isEmpty()) {
-                            Spacer(Modifier.height(8.dp))
+                // 2. People You Monitor — avatar strip + pager (inspired by requested strip+pager pattern)
+                if (beneficiaries.isNotEmpty()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
                             Text(
-                                text = "You have not connected to any beneficiaries yet. Enter a 6-character code above.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.ink500,
+                                text = "People you monitor",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
                             )
-                        } else if (beneficiaries.size > 1) {
-                            Spacer(Modifier.height(8.dp))
-                            CaregiverBeneficiaryCarousel(
+                            BeneficiaryAvatarStrip(
                                 beneficiaries = beneficiaries,
-                                onRemove = { id -> onRemoveBeneficiary(id) },
-                                onCall = { phone -> onCall(phone) },
-                                onOpen = { preview -> onOpenBeneficiaryChat(preview) },
+                                onAddClick = {},
+                                onAvatarClick = { idx ->
+                                    // Carousel is pager-based; tap strip to hint — pager handles swipe
+                                },
                             )
-                        } else {
-                            beneficiaries.forEach { beneficiary ->
-                                Spacer(Modifier.height(8.dp))
-                                CaregiverBeneficiaryRow(
-                                    beneficiary = beneficiary,
-                                    onRemove = { onRemoveBeneficiary(beneficiary.connectionId) },
-                                    onCall = { onCall(beneficiary.phone) },
-                                    onOpen = {
-                                        onOpenBeneficiaryChat(
-                                            ChatPreview(
-                                                partnerId = beneficiary.beneficiaryId,
-                                                partnerName = beneficiary.name,
-                                                partnerPhone = beneficiary.phone,
-                                                lastMessage = "",
-                                                lastTimestamp = System.currentTimeMillis(),
-                                                unreadCount = 0,
-                                            )
-                                        )
-                                    },
+                            Spacer(Modifier.height(10.dp))
+                            if (beneficiaries.size > 1) {
+                                CaregiverBeneficiaryCarousel(
+                                    beneficiaries = beneficiaries,
+                                    onRemove = { id -> onRemoveBeneficiary(id) },
+                                    onCall = { phone -> onCall(phone) },
+                                    onOpen = { preview -> onOpenBeneficiaryChat(preview) },
                                 )
+                            } else {
+                                beneficiaries.forEach { beneficiary ->
+                                    CaregiverBeneficiaryRow(
+                                        beneficiary = beneficiary,
+                                        onRemove = { onRemoveBeneficiary(beneficiary.connectionId) },
+                                        onCall = { onCall(beneficiary.phone) },
+                                        onOpen = {
+                                            onOpenBeneficiaryChat(
+                                                ChatPreview(
+                                                    partnerId = beneficiary.beneficiaryId,
+                                                    partnerName = beneficiary.name,
+                                                    partnerPhone = beneficiary.phone,
+                                                    lastMessage = "",
+                                                    lastTimestamp = System.currentTimeMillis(),
+                                                    unreadCount = 0,
+                                                )
+                                            )
+                                        },
+                                    )
+                                }
                             }
+                        }
+                    }
+                } else {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(18.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Text("People you monitor", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                            Spacer(Modifier.height(8.dp))
+                            Text("You have not connected to any beneficiaries yet. Enter a 6-character code above.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
                         }
                     }
                 }
@@ -2851,7 +2862,7 @@ private fun CaregiverDashboard(
                     SoundGuardTab.Settings -> onOpenSettings()
                 }
             },
-            peopleTabLabel = "People",
+            peopleTabLabel = "Beneficiaries",
         )
     }
 }

@@ -223,21 +223,21 @@ fun CodeDigitRow(
 ) {
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         repeat(length) { index ->
             val char = code.getOrNull(index)?.toString() ?: ""
             Box(
                 modifier = Modifier
-                    .size(40.dp)
-                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp)),
+                    .size(48.dp, 52.dp)
+                    .background(Color.White, RoundedCornerShape(12.dp))
+                    .border(1.2.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = char.ifBlank { "" },
-                    fontSize = 20.sp,
+                    fontSize = 22.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -245,6 +245,52 @@ fun CodeDigitRow(
             }
         }
     }
+}
+
+@Composable
+fun OtpPillInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    length: Int = 6,
+) {
+    val digitsOnly = value.filter(Char::isDigit).take(length)
+    BasicTextField(
+        value = digitsOnly,
+        onValueChange = { onValueChange(it.filter(Char::isDigit).take(length)) },
+        modifier = modifier,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+        decorationBox = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                repeat(length) { index ->
+                    val char = digitsOnly.getOrNull(index)?.toString() ?: ""
+                    val isFocused = digitsOnly.length == index
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp, 52.dp)
+                            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+                            .border(
+                                1.6.dp,
+                                if (isFocused) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                                RoundedCornerShape(12.dp),
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = char,
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        },
+    )
 }
 
 @Composable
@@ -384,6 +430,50 @@ fun SoundGuardBottomNav(
                 selected = selectedTab == SoundGuardTab.Settings,
                 onClick = { onTabSelected(SoundGuardTab.Settings) }
             )
+        }
+    }
+}
+
+@Composable
+fun BeneficiaryAvatarStrip(
+    beneficiaries: List<com.yuletan.soundguard.MonitoredBeneficiary>,
+    onAddClick: () -> Unit,
+    onAvatarClick: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.foundation.lazy.LazyRow(
+        modifier = modifier.padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        items(beneficiaries.size) { idx ->
+            val b = beneficiaries[idx]
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable { onAvatarClick(idx) }) {
+                Box {
+                    AvatarCircle(text = b.name, sizeDp = 40)
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .size(10.dp)
+                            .background(if (b.isPrimary) Color(0xFF22C55E) else Color(0xFFFBBF24), CircleShape)
+                            .border(1.5.dp, MaterialTheme.colorScheme.surface, CircleShape)
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(b.name.take(8), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+        }
+        item {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant, CircleShape)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                    .clickable(onClick = onAddClick),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("+", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.ink500)
+            }
         }
     }
 }
