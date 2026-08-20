@@ -14,6 +14,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -117,7 +123,7 @@ class MainActivity : ComponentActivity() {
     private var fullName by mutableStateOf("")
     private var phone by mutableStateOf("")
     private var monitoringConsent by mutableStateOf(false)
-    private var autoApproveCameraRequests by mutableStateOf(true)
+    private var autoApproveCameraRequests by mutableStateOf(false)
     private var termsAccepted by mutableStateOf(false)
     private var microphoneGranted by mutableStateOf(false)
     private var notificationsGranted by mutableStateOf(false)
@@ -1407,7 +1413,7 @@ class MainActivity : ComponentActivity() {
         demoPhotoPath = null
         demoSnapshotRequest = null
         demoSnapshotMessage = null
-        autoApproveCameraRequests = true
+        autoApproveCameraRequests = false
         chatMessages = emptyList()
         selectedChatPartner = null
     }
@@ -1840,14 +1846,27 @@ private fun SetupScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(
-                        modifier = Modifier.fillMaxWidth().clickable { onAutoApproveCameraRequestsChange(!autoApproveCameraRequests) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onAutoApproveCameraRequestsChange(!autoApproveCameraRequests) },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Checkbox(checked = autoApproveCameraRequests, onCheckedChange = onAutoApproveCameraRequestsChange)
+                        Checkbox(
+                            checked = autoApproveCameraRequests,
+                            onCheckedChange = onAutoApproveCameraRequestsChange,
+                        )
                         Spacer(Modifier.width(8.dp))
                         Column {
-                            Text("Auto-approve caregiver photo requests", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                            Text("Skips your confirmation during an active incident.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                            Text(
+                                "Auto-approve caregiver photo requests",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "Off by default for your privacy. When disabled, you will be prompted to approve each photo request.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.ink500,
+                            )
                         }
                     }
                 }
@@ -2212,14 +2231,32 @@ private fun BeneficiaryDashboard(
                     }
                 }
 
-                // 1. Hero monitoring card — big centered mic, words + button below
+                // 1. Hero monitoring card — mic = status/visual, button = action, alert = its own tappable row
                 val riskTier = riskSummary?.tier ?: RiskTier.Quiet
+                val isEmergency = audioState.isEmergency || (incident?.status == IncidentStatus.WaitingUser)
+                val isMonitoring = audioState.isMonitoring
+
+                // Ring color encodes monitoring state: grey = paused, pulsing green = live, red reserved for active alerts
                 val heroRingColor = when {
-                    audioState.isEmergency || riskTier == RiskTier.High -> MaterialTheme.colorScheme.danger
-                    riskTier == RiskTier.Medium -> MaterialTheme.colorScheme.warning
-                    audioState.isMonitoring -> MaterialTheme.colorScheme.primary
+                    isEmergency -> MaterialTheme.colorScheme.danger
+                    isMonitoring -> MaterialTheme.colorScheme.success
                     else -> MaterialTheme.colorScheme.outline
                 }
+
+                val infinitePulse = rememberInfiniteTransition(label = "pulse")
+                val pulseAlpha by infinitePulse.animateFloat(
+                    initialValue = 0.08f,
+                    targetValue = 0.22f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(1200, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "pulseAlpha",
+                )
+
+                val outerRingAlpha = if (isMonitoring && !isEmergency) pulseAlpha else 0.08f
+                val innerRingAlpha = if (isMonitoring && !isEmergency) (pulseAlpha + 0.06f) else 0.14f
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(24.dp),
@@ -2229,20 +2266,21 @@ private fun BeneficiaryDashboard(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 24.dp),
+                            .padding(horizontal = 16.dp, vertical = 20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
+                        // Status / Visual — Centered Mic Ring
                         Box(
                             modifier = Modifier
                                 .size(116.dp)
-                                .background(heroRingColor.copy(alpha = 0.08f), CircleShape)
+                                .background(heroRingColor.copy(alpha = outerRingAlpha), CircleShape)
                                 .border(3.dp, heroRingColor, CircleShape),
                             contentAlignment = Alignment.Center,
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(92.dp)
-                                    .background(heroRingColor.copy(alpha = 0.14f), CircleShape),
+                                    .background(heroRingColor.copy(alpha = innerRingAlpha), CircleShape),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Icon(
@@ -2254,12 +2292,12 @@ private fun BeneficiaryDashboard(
                             }
                         }
 
-                        Spacer(Modifier.height(18.dp))
+                        Spacer(Modifier.height(16.dp))
 
                         Text(
                             text = when {
-                                audioState.isEmergency -> "Sound detected"
-                                audioState.isMonitoring -> "Listening"
+                                isEmergency -> "Sound detected"
+                                isMonitoring -> "Listening"
                                 else -> "Monitoring paused"
                             },
                             style = MaterialTheme.typography.titleLarge,
@@ -2268,37 +2306,20 @@ private fun BeneficiaryDashboard(
                             textAlign = TextAlign.Center,
                         )
                         Spacer(Modifier.height(4.dp))
-                        val lastAlertAgo = formatLastAlertAgo(riskSummary?.lastAlertAtMs)
-                        val subtitleText = when {
-                            audioState.isEmergency -> "Caregivers alerted"
-                            riskTier == RiskTier.High -> buildString {
-                                append("High-risk alert")
-                                riskSummary?.lastAlertLabel?.let { append(" · $it") }
-                                lastAlertAgo?.let { append(" · $it") }
-                            }
-                            riskTier == RiskTier.Medium -> buildString {
-                                append("Medium-risk alert")
-                                riskSummary?.lastAlertLabel?.let { append(" · $it") }
-                                lastAlertAgo?.let { append(" · $it") }
-                            }
-                            audioState.isMonitoring -> "All quiet — no medium/high alerts in 24h"
-                            else -> "Tap below to start monitoring"
-                        }
                         Text(
-                            text = subtitleText,
+                            text = when {
+                                isEmergency -> "Caregivers alerted"
+                                isMonitoring -> "Continuous sound protection active"
+                                else -> "Tap below to start monitoring"
+                            },
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (riskTier == RiskTier.High) MaterialTheme.colorScheme.danger
-                            else if (riskTier == RiskTier.Medium) MaterialTheme.colorScheme.warning
-                            else MaterialTheme.colorScheme.ink500,
+                            color = if (isEmergency) MaterialTheme.colorScheme.danger else MaterialTheme.colorScheme.ink500,
                             textAlign = TextAlign.Center,
                         )
-                        Spacer(Modifier.height(10.dp))
-                        StatusChip(
-                            label = riskTierChipLabel(riskTier),
-                            tone = riskTierTone(riskTier),
-                        )
+
                         Spacer(Modifier.height(18.dp))
 
+                        // Action — Start/Pause Button
                         Button(
                             onClick = onToggleMonitoring,
                             modifier = Modifier
@@ -2317,13 +2338,68 @@ private fun BeneficiaryDashboard(
                             )
                         }
 
+                        Spacer(Modifier.height(18.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 1.dp)
                         Spacer(Modifier.height(10.dp))
-                        Text(
-                            text = "Details",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                            color = MaterialTheme.colorScheme.ink700,
-                            modifier = Modifier.clickable { showDetailsSheet = true },
-                        )
+
+                        // Alert Row — Single tappable row with severity shown once that taps through to details
+                        val lastAlertAgo = formatLastAlertAgo(riskSummary?.lastAlertAtMs)
+                        val alertText = when {
+                            riskSummary?.lastAlertLabel != null && lastAlertAgo != null ->
+                                "${riskSummary.lastAlertLabel} detected · $lastAlertAgo"
+                            riskSummary?.lastAlertLabel != null ->
+                                "${riskSummary.lastAlertLabel} detected"
+                            riskTier == RiskTier.Quiet ->
+                                "All quiet — no alerts in 24h"
+                            else -> "Live audio diagnostics"
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable { showDetailsSheet = true }
+                                .padding(horizontal = 6.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                StatusChip(
+                                    label = riskTierChipLabel(riskTier),
+                                    tone = riskTierTone(riskTier),
+                                )
+                                Text(
+                                    text = alertText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                Text(
+                                    text = "Details",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.ink500,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                                Icon(
+                                    imageVector = Icons.Outlined.ChevronRight,
+                                    contentDescription = "Details",
+                                    tint = MaterialTheme.colorScheme.ink500,
+                                    modifier = Modifier.size(16.dp),
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -3575,6 +3651,7 @@ private fun SettingsScreen(
                 color = MaterialTheme.colorScheme.ink500,
                 letterSpacing = 0.8.sp,
             )
+            val isBeneficiaryRole = !currentRole.equals("caregiver", ignoreCase = true)
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
@@ -3589,14 +3666,28 @@ private fun SettingsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Auto-approve camera requests", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                        Text("Skips your confirmation during an active incident.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                        Text(
+                            text = if (isBeneficiaryRole) "Auto-approve photo requests" else "Photo verification privacy",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            text = if (isBeneficiaryRole) {
+                                "Allow linked caregivers to take verification snapshots during active incidents without manual confirmation. Off by default for your privacy."
+                            } else {
+                                "Beneficiaries hold full control over camera snapshots. During an active incident, requests will prompt them for confirmation unless they have enabled auto-approval."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.ink500,
+                        )
                     }
-                    Spacer(Modifier.width(8.dp))
-                    SoundGuardSwitch(
-                        checked = autoApproveCameraRequests,
-                        onCheckedChange = onAutoApproveCameraRequestsChange,
-                    )
+                    if (isBeneficiaryRole) {
+                        Spacer(Modifier.width(8.dp))
+                        SoundGuardSwitch(
+                            checked = autoApproveCameraRequests,
+                            onCheckedChange = onAutoApproveCameraRequestsChange,
+                        )
+                    }
                 }
             }
 
