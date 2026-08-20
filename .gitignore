@@ -28,5 +28,10 @@ qwen.md
 FILE_DIRECTORY.md
 commit_msg.txt
 
+# Design / audit docs
+SoundGuardTheme.kt
+soundguard-redesign-mockups.html
+soundguard-ux-audit.md
+
 # Command Code IDE
 .commandcode/
