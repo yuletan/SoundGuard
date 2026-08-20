@@ -141,6 +141,50 @@ class IncidentClient(context: Context) {
         }
     }
 
+    /** One request covering all monitored beneficiaries — used for risk-tier summaries. */
+    suspend fun fetchRecentIncidentsForBeneficiaries(beneficiaryIds: List<String>): Result<Map<String, List<SharedIncident>>> = withContext(Dispatchers.IO) {
+        runCatching {
+            if (beneficiaryIds.isEmpty()) return@runCatching emptyMap()
+            val token = authClient.getToken()
+            val inFilter = "in.(" + beneficiaryIds.joinToString(",") + ")"
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
+                "/rest/v1/incidents?beneficiary_id=$inFilter&confidence=gte.$MIN_DISPLAY_CONFIDENCE" +
+                "&select=id,sound_label,severity,confidence,status,started_at,beneficiary_id&order=started_at.desc&limit=300"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+            }
+            try {
+                val code = connection.responseCode
+                val response = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                    ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (code !in 200..299) error("Incident fetch failed with HTTP $code: $response")
+                val array = org.json.JSONArray(response)
+                val grouped = mutableMapOf<String, MutableList<SharedIncident>>()
+                for (index in 0 until array.length()) {
+                    val row = array.getJSONObject(index)
+                    if (row.optDouble("confidence", 0.0) < MIN_DISPLAY_CONFIDENCE) continue
+                    if (isHiddenSeverity(row.optString("severity", "low"))) continue
+                    val incident = SharedIncident(
+                        id = row.getString("id"),
+                        label = row.optString("sound_label", "Alert"),
+                        severity = row.optString("severity", "low"),
+                        confidence = row.optDouble("confidence", 0.0).toFloat(),
+                        status = row.optString("status", "detected"),
+                        startedAt = row.optString("started_at"),
+                        beneficiaryId = row.optString("beneficiary_id").takeIf { it.isNotBlank() },
+                    )
+                    val bId = incident.beneficiaryId ?: continue
+                    grouped.getOrPut(bId) { mutableListOf() }.add(incident)
+                }
+                grouped
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
     suspend fun clearOwnIncidents(): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val token = authClient.getToken()
@@ -200,4 +244,5 @@ data class SharedIncident(
     val confidence: Float,
     val status: String,
     val startedAt: String,
+    val beneficiaryId: String? = null,
 )

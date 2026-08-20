@@ -43,23 +43,16 @@ class SnapshotClient(context: Context) {
             val requesterId = authClient.userId() ?: error("No authenticated user was found.")
             require(cameraFacing == "front" || cameraFacing == "rear") { "Unsupported camera direction." }
             val path = "$beneficiaryId/$incidentId/${UUID.randomUUID()}.jpg"
-            val body = JSONObject().apply {
-                put("incident_id", incidentId)
-                put("beneficiary_id", beneficiaryId)
-                put("requested_by", requesterId)
-                put("camera_facing", cameraFacing)
-                put("storage_path", path)
-                put("status", "requested")
-            }
-            val response = requestJson(
-                method = "POST",
-                endpoint = restUrl("camera_snapshots"),
-                token = token,
-                body = body,
-                prefer = "return=representation",
-            )
-            val row = org.json.JSONArray(response).optJSONObject(0)
-                ?: error("Snapshot request returned no row.")
+
+            // Preferred path: SECURITY DEFINER RPC — bypasses table RLS entirely,
+            // so "new row violates RLS for table camera_snapshots" can never happen.
+            // Falls back to a direct table insert for databases without migration 032.
+            val row = runCatching {
+                requestRpcSnapshot(incidentId, beneficiaryId, cameraFacing, path, token)
+            }.recoverCatching {
+                requestTableSnapshot(incidentId, beneficiaryId, cameraFacing, path, requesterId, token)
+            }.getOrThrow()
+
             SnapshotRequest(
                 id = row.getString("id"),
                 storagePath = row.getString("storage_path"),
@@ -67,6 +60,56 @@ class SnapshotClient(context: Context) {
                 approvalStatus = row.optString("approval_status", "pending"),
             )
         }
+    }
+
+    private fun requestRpcSnapshot(
+        incidentId: String,
+        beneficiaryId: String,
+        cameraFacing: String,
+        path: String,
+        token: String,
+    ): org.json.JSONObject {
+        val body = JSONObject().apply {
+            put("p_incident_id", incidentId)
+            put("p_beneficiary_id", beneficiaryId)
+            put("p_camera_facing", cameraFacing)
+            put("p_storage_path", path)
+        }
+        val response = requestJson(
+            method = "POST",
+            endpoint = "${BuildConfig.SUPABASE_URL.trimEnd('/')}/rest/v1/rpc/request_camera_snapshot",
+            token = token,
+            body = body,
+            prefer = null,
+        )
+        return JSONObject(response)
+    }
+
+    private fun requestTableSnapshot(
+        incidentId: String,
+        beneficiaryId: String,
+        cameraFacing: String,
+        path: String,
+        requesterId: String,
+        token: String,
+    ): org.json.JSONObject {
+        val body = JSONObject().apply {
+            put("incident_id", incidentId)
+            put("beneficiary_id", beneficiaryId)
+            put("requested_by", requesterId)
+            put("camera_facing", cameraFacing)
+            put("storage_path", path)
+            put("status", "requested")
+        }
+        val response = requestJson(
+            method = "POST",
+            endpoint = restUrl("camera_snapshots"),
+            token = token,
+            body = body,
+            prefer = "return=representation",
+        )
+        return org.json.JSONArray(response).optJSONObject(0)
+            ?: error("Snapshot request returned no row.")
     }
 
     suspend fun uploadSnapshot(request: SnapshotRequest, file: File): Result<Unit> = withContext(Dispatchers.IO) {
