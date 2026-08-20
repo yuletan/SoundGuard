@@ -21,3 +21,12 @@ google-services.json
 *.onnx
 model/*.tflite
 model/*.onnx
+
+# Personal / AI scratch files
+aistudio.md
+qwen.md
+FILE_DIRECTORY.md
+commit_msg.txt
+
+# Command Code IDE
+.commandcode/
