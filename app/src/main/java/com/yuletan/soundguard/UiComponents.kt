@@ -167,11 +167,12 @@ fun ConfidenceBar(confidence: Float, label: String = "Confidence") {
 }
 
 @Composable
-fun OtpCodeInput(
+fun PairingCodeInput(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     length: Int = 6,
+    placeholder: String = "6-CHARACTER CODE",
 ) {
     BasicTextField(
         value = value,
@@ -186,7 +187,7 @@ fun OtpCodeInput(
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
                 Text(
-                    text = "6-CHARACTER CODE",
+                    text = placeholder,
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.ink500,
                     fontWeight = FontWeight.ExtraBold,
@@ -213,6 +214,46 @@ fun OtpCodeInput(
         },
     )
 }
+
+@Composable
+fun CodeDigitRow(
+    code: String,
+    length: Int = 6,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(length) { index ->
+            val char = code.getOrNull(index)?.toString() ?: ""
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(10.dp))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = char.ifBlank { "" },
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun OtpCodeInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    length: Int = 6,
+) = PairingCodeInput(value = value, onValueChange = onValueChange, modifier = modifier, length = length)
 
 @Composable
 fun CollapsibleSection(

@@ -372,6 +372,7 @@ class MainActivity : ComponentActivity() {
                             onGenerateCode = { generatePairingCode() },
                             onCopyCode = { code -> copyToClipboard(code) },
                             onShareCode = { code -> sharePairingCode(code) },
+                            onConnectCaregiver = { code -> pairBeneficiary(code) },
                             onSetPrimary = { connectionId, caregiverId -> setPrimaryCaregiver(connectionId, caregiverId) },
                             onRemoveCaregiver = { connectionId -> requestRemoveConnection(connectionId) },
                             onCall = { targetPhone -> callPhoneNumber(targetPhone) },
@@ -1940,6 +1941,7 @@ private fun BeneficiaryDashboard(
     onGenerateCode: () -> Unit,
     onCopyCode: (String) -> Unit,
     onShareCode: (String) -> Unit,
+    onConnectCaregiver: (String) -> Unit,
     onSetPrimary: (String, String) -> Unit,
     onRemoveCaregiver: (String) -> Unit,
     onCall: (String) -> Unit,
@@ -2103,7 +2105,52 @@ private fun BeneficiaryDashboard(
 
                 Spacer(Modifier.height(12.dp))
 
-                // 2. Your Caregivers Card matching Mockup Frame 1
+                // 2. Connect a caregiver Card (same as Connect a beneficiary) — bidirectional pairing
+                var caregiverCodeInput by remember { mutableStateOf("") }
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text(
+                            text = "Connect a caregiver",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        PairingCodeInput(
+                            value = caregiverCodeInput,
+                            onValueChange = { caregiverCodeInput = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = "6-CHARACTER CODE",
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                if (caregiverCodeInput.length == 6) {
+                                    onConnectCaregiver(caregiverCodeInput)
+                                    caregiverCodeInput = ""
+                                }
+                            },
+                            enabled = !loading && caregiverCodeInput.length == 6,
+                            modifier = Modifier.fillMaxWidth().height(44.dp),
+                            shape = RoundedCornerShape(999.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary,
+                            ),
+                        ) {
+                            Text("Connect", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                // 3. Your Caregivers Card matching Mockup Frame 1
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(18.dp),
@@ -2136,7 +2183,7 @@ private fun BeneficiaryDashboard(
                         if (caregivers.isEmpty()) {
                             Spacer(Modifier.height(8.dp))
                             Text(
-                                text = "No caregivers linked yet. Tap + Add above to generate a 6-character connect code.",
+                                text = "No caregivers linked yet. Enter the 6-character code above or tap + Add to share yours.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.ink500,
                             )
@@ -2180,7 +2227,7 @@ private fun BeneficiaryDashboard(
 
                 Spacer(Modifier.height(12.dp))
 
-                // 3. Developer & Test Tools (Collapsible Accordion) matching Mockup Frame 1
+                // 4. Developer & Test Tools (Collapsible Accordion) matching Mockup Frame 1
                 CollapsibleSection(
                     title = "Developer & test tools",
                     initiallyExpanded = false,
@@ -2247,19 +2294,23 @@ private fun BeneficiaryDashboard(
                 Text("Give this 6-character code to your caregiver to link apps:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
 
                 Spacer(Modifier.height(16.dp))
-                Box(
-                    modifier = Modifier
-                        .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp))
-                        .padding(horizontal = 28.dp, vertical = 14.dp),
-                ) {
-                    Text(
-                        text = pairingCode ?: "••••••",
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 28.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 4.sp,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
+                if (pairingCode != null) {
+                    CodeDigitRow(code = pairingCode!!, modifier = Modifier.align(Alignment.CenterHorizontally))
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp))
+                            .padding(horizontal = 28.dp, vertical = 14.dp),
+                    ) {
+                        Text(
+                            text = "••••••",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 4.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2694,10 +2745,11 @@ private fun CaregiverDashboard(
                         )
                         Spacer(Modifier.height(10.dp))
 
-                        OtpCodeInput(
+                        PairingCodeInput(
                             value = codeInput,
                             onValueChange = { codeInput = it },
                             modifier = Modifier.fillMaxWidth(),
+                            placeholder = "6-CHARACTER CODE",
                         )
 
                         Spacer(Modifier.height(10.dp))
@@ -2719,17 +2771,6 @@ private fun CaregiverDashboard(
                         ) {
                             Text("Connect", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
-
-                        Spacer(Modifier.height(8.dp))
-
-                        Text(
-                            text = "Scan QR instead",
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                            color = MaterialTheme.colorScheme.ink500,
-                            modifier = Modifier
-                                .align(Alignment.CenterHorizontally)
-                                .clickable { /* QR Scanner placeholder */ },
-                        )
                     }
                 }
 
