@@ -325,7 +325,7 @@ class MainActivity : ComponentActivity() {
                                                 .uploadSnapshot(request, java.io.File(savedPath))
                                                 .onSuccess {
                                                     demoSnapshotMessage = "Photo uploaded — visible to caregiver and beneficiary for 10 minutes."
-                                                    selectedChatPartner?.let { partner -> loadChatMessages(partner.partnerId) }
+                                                    selectedChatPartner?.let { partner -> loadChatMessages(partner.partnerId, clearFirst = false) }
                                                 }
                                                 .onFailure { demoSnapshotMessage = "Photo upload failed: ${it.message}" }
                                             snapshotUploading = false
@@ -457,7 +457,7 @@ class MainActivity : ComponentActivity() {
                                     else AppScreen.BeneficiaryDashboard
                                 },
                                 onRefresh = {
-                                    selectedChatPartner?.let { partner -> loadChatMessages(partner.partnerId) }
+                                    selectedChatPartner?.let { partner -> loadChatMessages(partner.partnerId, clearFirst = false) }
                                 },
                                 onClearChat = {
                                     val bid = selectedChatPartner?.partnerId
@@ -1117,14 +1117,16 @@ class MainActivity : ComponentActivity() {
         manager?.notify(beneficiaryId.hashCode(), notification)
     }
 
-    private fun loadChatMessages(partnerId: String) {
-        chatLoading = true
-        chatMessages = emptyList()
+    private fun loadChatMessages(partnerId: String, clearFirst: Boolean = true) {
+        if (clearFirst) {
+            chatLoading = true
+            chatMessages = emptyList()
+        }
         lifecycleScope.launch {
             chatRepository.buildChatMessages(partnerId, selectedRole.equals("caregiver", ignoreCase = true))
                 .onSuccess { chatMessages = it }
                 .onFailure { dashboardMessage = it.message }
-            chatLoading = false
+            if (clearFirst) chatLoading = false
         }
     }
 
@@ -1264,7 +1266,7 @@ class MainActivity : ComponentActivity() {
                     } else {
                         demoSnapshotMessage = "Photo request sent — waiting for beneficiary approval. The photo will appear in chat once captured."
                     }
-                    selectedChatPartner?.let { partner -> loadChatMessages(partner.partnerId) }
+                    selectedChatPartner?.let { partner -> loadChatMessages(partner.partnerId, clearFirst = false) }
                 }
                 .onFailure { demoSnapshotMessage = "Photo request failed: ${it.message}" }
         }

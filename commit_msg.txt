@@ -1,0 +1,9 @@
+ephemeral photo: WhatsApp-style preview with 10-minute auto-wipe
+
+- Add expiresAt to ChatMessage.PhotoRequest and surface it from ChatRepository so both caregiver and beneficiary see the same bubble from one camera_snapshots row
+- Keep expired snapshots as placeholder instead of silent vanish; null signedUrl after expiry and show Photo expired with privacy note
+- Rebuild PhotoRequestBubble as WhatsApp-style thumbnail with tap-to-view, overlay timer (m:ss left), Visible to both badge, and live 1s countdown that flips to expired in place
+- Harden backend to strict 10 minutes: clamp future expiries back to 10m, unify cleanup_expired_camera_snapshots / expire_camera_snapshots to delete storage.objects even when row already marked expired, backfill pg_cron jobs
+- Match chat/dashboard chrome to redesign mockups (ChatListScreen, MainActivity, theme)
+
+Co-authored-by: CommandCodeBot <noreply@commandcode.ai>

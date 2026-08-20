@@ -87,7 +87,7 @@ fun ChatScreen(
 
     LaunchedEffect(Unit) {
         while (true) {
-            delay(10_000L)
+            delay(20_000L)
             onRefresh()
         }
     }

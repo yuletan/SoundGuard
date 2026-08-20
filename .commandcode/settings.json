@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(.gradlew.bat:*)",
+      "Shell(./gradlew:*)",
+      "Shell(grep:*)",
+      "powershell"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
