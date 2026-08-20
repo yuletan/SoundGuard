@@ -151,6 +151,7 @@ class MainActivity : ComponentActivity() {
     private var demoSnapshotRequest by mutableStateOf<SnapshotRequest?>(null)
     private var demoSnapshotMessage by mutableStateOf<String?>(null)
     private var pendingSnapshotRequest by mutableStateOf<PendingSnapshotRequest?>(null)
+    private var snapshotUploading by mutableStateOf(false)
     private var loadedSessionUserId: String? = null
     private var showResetDataDialog by mutableStateOf(false)
 
@@ -294,7 +295,13 @@ class MainActivity : ComponentActivity() {
                         )
                         AppScreen.CameraTest -> CameraTestScreen(
                             onBack = {
-                                screen = if (returnToPreviewAfterCamera) AppScreen.BeneficiaryDashboard else AppScreen.Setup
+                                if (returnToPreviewAfterCamera && selectedChatPartner != null) {
+                                    screen = AppScreen.Chat
+                                } else if (returnToPreviewAfterCamera) {
+                                    screen = AppScreen.BeneficiaryDashboard
+                                } else {
+                                    screen = AppScreen.Setup
+                                }
                                 returnToPreviewAfterCamera = false
                             },
                             onFinished = { capturedPath ->
@@ -303,15 +310,24 @@ class MainActivity : ComponentActivity() {
                                     demoPhotoPath = capturedPath
                                     demoSnapshotRequest?.let { request ->
                                         val savedPath = capturedPath ?: return@let
+                                        snapshotUploading = true
+                                        demoSnapshotMessage = "Uploading photo..."
                                         lifecycleScope.launch {
                                             SnapshotClient(this@MainActivity)
                                                 .uploadSnapshot(request, java.io.File(savedPath))
-                                                .onSuccess { demoSnapshotMessage = "Photo uploaded to secure storage." }
+                                                .onSuccess {
+                                                    demoSnapshotMessage = "Photo uploaded — visible to caregiver and beneficiary for 10 minutes."
+                                                    selectedChatPartner?.let { partner -> loadChatMessages(partner.partnerId) }
+                                                }
                                                 .onFailure { demoSnapshotMessage = "Photo upload failed: ${it.message}" }
+                                            snapshotUploading = false
                                         }
                                     }
+                                    if (selectedChatPartner != null) screen = AppScreen.Chat
+                                    else screen = AppScreen.BeneficiaryDashboard
+                                } else {
+                                    screen = AppScreen.Setup
                                 }
-                                screen = if (returnToPreviewAfterCamera) AppScreen.BeneficiaryDashboard else AppScreen.Setup
                                 returnToPreviewAfterCamera = false
                             },
                         )
@@ -413,6 +429,7 @@ class MainActivity : ComponentActivity() {
                                 isCaregiverView = selectedRole.equals("caregiver", ignoreCase = true),
                                 snapshotMessage = demoSnapshotMessage,
                                 activeIncidentBannerText = bannerText,
+                                isUploadingPhoto = snapshotUploading,
                                 onRequestPhoto = {
                                     if (selectedRole.equals("caregiver", ignoreCase = true)) requestDemoSnapshotAndOpenCamera(false)
                                     else demoSnapshotMessage = "Photo requests are made by caregivers."
@@ -435,6 +452,19 @@ class MainActivity : ComponentActivity() {
                                     }
                                 },
                             )
+                            if (snapshotUploading) {
+                                androidx.compose.material3.AlertDialog(
+                                    onDismissRequest = {},
+                                    title = { Text("Uploading photo...", fontWeight = FontWeight.Bold) },
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp)
+                                            Text("Securely uploading to private storage. Please keep the app open.", style = MaterialTheme.typography.bodyMedium)
+                                        }
+                                    },
+                                    confirmButton = {},
+                                )
+                            }
                         }
                         AppScreen.ChatList -> ChatListScreen(
                             title = "Chats",
@@ -1081,6 +1111,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestSnapshotForIncident(incidentId: String, beneficiaryId: String, forceApproval: Boolean) {
+        demoSnapshotMessage = "Requesting photo..."
         lifecycleScope.launch {
             SnapshotClient(this@MainActivity)
                 .requestSnapshot(incidentId, beneficiaryId)
@@ -1093,8 +1124,9 @@ class MainActivity : ComponentActivity() {
                     if (forceApproval || request.approvalStatus == "approved") {
                         demoSnapshotMessage = "Photo request approved. Waiting for beneficiary to capture the photo."
                     } else {
-                        demoSnapshotMessage = "Photo request is waiting for beneficiary approval."
+                        demoSnapshotMessage = "Photo request sent — waiting for beneficiary approval. The photo will appear in chat once captured."
                     }
+                    selectedChatPartner?.let { partner -> loadChatMessages(partner.partnerId) }
                 }
                 .onFailure { demoSnapshotMessage = "Photo request failed: ${it.message}" }
         }
