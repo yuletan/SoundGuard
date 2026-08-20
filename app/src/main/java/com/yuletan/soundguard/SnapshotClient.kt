@@ -74,6 +74,9 @@ class SnapshotClient(context: Context) {
             require(file.isFile) { "Snapshot file does not exist." }
             require(file.length() in 1..MAX_FILE_BYTES) { "Snapshot must be between 1 byte and 5 MB." }
             val token = requireToken()
+            if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
+                error("Supabase is not configured (check local.properties).")
+            }
             val upload = (URL(storageUrl(request.storagePath)).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = 15_000
@@ -88,18 +91,29 @@ class SnapshotClient(context: Context) {
                 file.inputStream().use { input -> upload.outputStream.use { output -> input.copyTo(output) } }
                 if (upload.responseCode !in 200..299) {
                     val body = upload.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                    error("Snapshot upload failed with HTTP ${upload.responseCode}: $body")
+                    val hint = when {
+                        upload.responseCode == 401 || upload.responseCode == 403 -> " Check RLS: your profile may not have an active care connection, or the snapshot approval is still pending."
+                        upload.responseCode == 413 -> " Image too large."
+                        body.contains("bucket", ignoreCase = true) -> " Storage bucket \"camera-snapshots\" does not exist or is not configured."
+                        body.contains("timeout", ignoreCase = true) || body.contains("connect", ignoreCase = true) -> " Network timeout — the device may be offline."
+                        else -> ""
+                    }
+                    error("Snapshot upload failed with HTTP ${upload.responseCode}: $body$hint")
                 }
             } finally {
                 upload.disconnect()
             }
-            requestJson(
-                method = "PATCH",
-                endpoint = "${restUrl("camera_snapshots")}?id=eq.${encode(request.id)}",
-                token = token,
-                body = JSONObject().apply { put("status", "uploaded") },
-                prefer = "return=minimal",
-            )
+            try {
+                requestJson(
+                    method = "PATCH",
+                    endpoint = "${restUrl("camera_snapshots")}?id=eq.${encode(request.id)}",
+                    token = token,
+                    body = JSONObject().apply { put("status", "uploaded") },
+                    prefer = "return=minimal",
+                )
+            } catch (e: Exception) {
+                error("Upload succeeded but marking snapshot as 'uploaded' failed: ${e.message}. The photo will not appear in chat until this succeeds.")
+            }
             Unit
         }
     }

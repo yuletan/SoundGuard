@@ -79,6 +79,7 @@ fun ChatScreen(
     onCall: () -> Unit,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
+    onClearChat: (() -> Unit)? = null,
 ) {
     var showPhotoDetail by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
@@ -140,6 +141,11 @@ fun ChatScreen(
             }
             IconButton(onClick = onCall, modifier = Modifier.size(36.dp)) {
                 Icon(Icons.Outlined.Call, contentDescription = "Call", tint = MaterialTheme.colorScheme.ink700)
+            }
+            if (isCaregiverView && onClearChat != null && messages.isNotEmpty()) {
+                IconButton(onClick = onClearChat, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Outlined.HideImage, contentDescription = "Clear chat", tint = MaterialTheme.colorScheme.ink700)
+                }
             }
         }
 
@@ -365,6 +371,8 @@ private fun IncidentBubble(
     val borderColor = if (!isSent) {
         if (isDark) Color(0xFF333333) else Color(0xFFE0E0DE)
     } else Color.Transparent
+    val sev = severityFromString(message.severity)
+    val tone = severityTone(sev)
 
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -393,6 +401,7 @@ private fun IncidentBubble(
                     letterSpacing = 0.4.sp,
                     color = subTextColor,
                 )
+                StatusChip(label = severityChipLabel(sev), tone = tone)
                 if (message.label.contains("simulated", ignoreCase = true) ||
                     message.label.contains("test", ignoreCase = true) ||
                     message.id.contains("sim", ignoreCase = true)

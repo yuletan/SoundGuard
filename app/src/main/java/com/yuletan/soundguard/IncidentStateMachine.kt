@@ -71,7 +71,7 @@ class IncidentStateMachine(
         confidence: Float,
         now: Long,
     ): IncidentRecord? {
-        if (severity == SoundSeverity.None) return null
+        if (severity == SoundSeverity.None || severity == SoundSeverity.Low) return null
         if (active != null && active!!.status !in TERMINAL_STATUSES) return active
 
         val incident = IncidentRecord(
@@ -83,10 +83,9 @@ class IncidentStateMachine(
             startedAt = now,
             nextDeadlineAt = if (severity == SoundSeverity.High) now + beneficiaryWindowMs else null,
         )
-        if (severity == SoundSeverity.Low) {
+        if (severity == SoundSeverity.Medium) {
             history.addLast(incident)
             while (history.size > maxHistory) history.removeFirst()
-            active = null
             return incident
         }
         active = incident

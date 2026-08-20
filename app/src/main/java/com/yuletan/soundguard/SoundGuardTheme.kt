@@ -179,6 +179,27 @@ val ColorScheme.ink300: Color
 val ColorScheme.ink100: Color
     get() = if (this == DarkColors) DarkInk100 else Ink100
 
+fun severityFromString(value: String): SoundSeverity = when (value.trim().lowercase()) {
+    "high" -> SoundSeverity.High
+    "medium" -> SoundSeverity.Medium
+    "low" -> SoundSeverity.Low
+    else -> SoundSeverity.None
+}
+
+fun severityTone(severity: SoundSeverity): IncidentStatusTone = when (severity) {
+    SoundSeverity.High -> IncidentStatusTone.Danger
+    SoundSeverity.Medium -> IncidentStatusTone.Warning
+    SoundSeverity.Low,
+    SoundSeverity.None -> IncidentStatusTone.Neutral
+}
+
+fun severityChipLabel(severity: SoundSeverity): String = when (severity) {
+    SoundSeverity.High -> "HIGH RISK"
+    SoundSeverity.Medium -> "MEDIUM RISK"
+    SoundSeverity.Low -> "LOW"
+    SoundSeverity.None -> "MONITORING"
+}
+
 // Helper functions for incident status
 fun formatIncidentLabel(status: String): String = when (status.lowercase()) {
     "waiting_user", "waitinguser", "detected" -> "Awaiting response"

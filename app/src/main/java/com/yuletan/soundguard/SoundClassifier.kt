@@ -11,6 +11,7 @@ import java.nio.channels.FileChannel
 
 enum class SoundSeverity {
     High,
+    Medium,
     Low,
     None,
 }
@@ -131,21 +132,21 @@ class SoundClassifier(private val context: Context) {
 
         private val categoryRules = listOf(
             CategoryRule("speech", "Human Speech", SoundSeverity.None, false, idx(0..18)),
-            CategoryRule("crying", "Crying Detected", SoundSeverity.Low, false, idx(19..23)),
+            CategoryRule("crying", "Crying Detected", SoundSeverity.Medium, false, idx(19..23)),
             CategoryRule("singing", "Singing", SoundSeverity.None, false, idx(24..32)),
-            CategoryRule("human_body", "Cough / Sneeze / Snore", SoundSeverity.Low, false, idx(33..60)),
+            CategoryRule("human_body", "Cough / Sneeze / Snore", SoundSeverity.Medium, false, idx(33..60)),
             CategoryRule("crowd", "Crowd / Cheering", SoundSeverity.None, false, idx(61..66)),
             CategoryRule("animal", "Animal Sound", SoundSeverity.Low, false, idx(67..131)),
             CategoryRule("music", "Music / TV", SoundSeverity.None, false, idx(132..276)),
             CategoryRule("wind", "Wind", SoundSeverity.None, false, idx(277..279)),
-            CategoryRule("thunder", "Thunder", SoundSeverity.Low, false, idx(280..281)),
+            CategoryRule("thunder", "Thunder", SoundSeverity.Medium, false, idx(280..281)),
             CategoryRule("water", "Water Sound", SoundSeverity.Low, false, idx(282..289)),
             CategoryRule("fire", "Fire / Crackling", SoundSeverity.High, true, idx(290..293)),
             CategoryRule("vehicle", "Vehicle", SoundSeverity.None, false, idx(294..315, 335..347)),
             CategoryRule("emergency_vehicle", "Emergency Vehicle Siren", SoundSeverity.High, true, idx(316..319)),
             CategoryRule("train", "Train", SoundSeverity.None, false, idx(322..328)),
             CategoryRule("aircraft", "Aircraft", SoundSeverity.None, false, idx(329..334)),
-            CategoryRule("door", "Door / Doorbell / Knock", SoundSeverity.Low, false, idx(348..354)),
+            CategoryRule("door", "Door / Doorbell / Knock", SoundSeverity.Medium, false, idx(348..354)),
             CategoryRule("household", "Household Sound", SoundSeverity.None, false, idx(355..381)),
             CategoryRule("alarm_telephone", "Alarm / Telephone", SoundSeverity.High, true, idx(382..389)),
             CategoryRule("siren_smoke", "Siren / Smoke Alarm", SoundSeverity.High, true, idx(390..396)),

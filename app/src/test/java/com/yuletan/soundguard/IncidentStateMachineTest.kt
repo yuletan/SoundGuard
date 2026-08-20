@@ -55,7 +55,20 @@ class IncidentStateMachineTest {
 
         val incident = machine.detect("Door knock", SoundSeverity.Low, 0.6f, 10L)
 
+        assertNull(incident)
+        assertNull(machine.activeIncident())
+    }
+
+    @Test
+    fun mediumSeverityIsVisibleButDoesNotRequireBeneficiaryResponse() {
+        val machine = IncidentStateMachine()
+
+        val incident = machine.detect("Door knock", SoundSeverity.Medium, 0.6f, 10L)
+
+        assertNotNull(incident)
         assertEquals(IncidentStatus.Detected, incident?.status)
         assertNull(incident?.nextDeadlineAt)
+        assertNull(machine.activeIncident())
+        assertEquals(1, machine.history().size)
     }
 }

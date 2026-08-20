@@ -36,6 +36,14 @@ data class AlertEvent(
     val timestamp: Long,
 )
 
+data class ProbeSnapshot(
+    val label: String,
+    val category: String,
+    val confidence: Float,
+    val isEmergency: Boolean,
+    val ts: Long,
+)
+
 data class LiveAudioState(
     val isMonitoring: Boolean = false,
     val soundCategory: String = "background",
@@ -50,6 +58,10 @@ data class LiveAudioState(
     val alertHistory: List<AlertEvent> = emptyList(),
     val activeIncident: IncidentRecord? = null,
     val backendIncidentId: String? = null,
+    val topCandidates: List<CategoryScore> = emptyList(),
+    val debugText: String = "",
+    val lastFrameAtMs: Long = 0L,
+    val probeLog: List<ProbeSnapshot> = emptyList(),
 )
 
 class AudioMonitoringService : Service() {
@@ -94,6 +106,10 @@ class AudioMonitoringService : Service() {
             lastRecordedAt = 0L
             incidentEngine.reset()
             _audioState.value = LiveAudioState()
+        }
+
+        fun clearProbeLog() {
+            _audioState.update { it.copy(probeLog = emptyList()) }
         }
 
         fun simulateSound(category: String, label: String, confidence: Float, isEmergency: Boolean) {
@@ -263,6 +279,8 @@ class AudioMonitoringService : Service() {
                     if (updatedHistory.size > previousHistory.size) {
                         persistIncident(updatedHistory.last())
                     }
+                    val nowMs = System.currentTimeMillis()
+                    val snap = ProbeSnapshot(classification.displayLabel, classification.category, classification.confidence, classification.isEmergency, nowMs)
                     _audioState.value = _audioState.value.copy(
                         soundCategory = classification.category,
                         displayLabel = classification.displayLabel,
@@ -270,16 +288,20 @@ class AudioMonitoringService : Service() {
                         amplitude = boostedAmplitude,
                         isEmergency = classification.isEmergency,
                         isSimulated = false,
-                        lastEmergencyTimestamp = if (classification.isEmergency) System.currentTimeMillis() else _audioState.value.lastEmergencyTimestamp,
+                        lastEmergencyTimestamp = if (classification.isEmergency) nowMs else _audioState.value.lastEmergencyTimestamp,
                         lastEmergencyLabel = if (classification.isEmergency) classification.displayLabel else _audioState.value.lastEmergencyLabel,
                         lastEmergencyConfidence = if (classification.isEmergency) classification.confidence else _audioState.value.lastEmergencyConfidence,
                         alertHistory = updatedHistory,
+                        topCandidates = classification.topCandidates,
+                        debugText = classification.debugText,
+                        lastFrameAtMs = nowMs,
+                        probeLog = (_audioState.value.probeLog + snap).takeLast(40),
                         activeIncident = incidentEngine.detect(
                             classification.displayLabel,
                             classification.severity,
                             classification.confidence,
-                            System.currentTimeMillis(),
-                        ) ?: incidentEngine.advance(System.currentTimeMillis()),
+                            nowMs,
+                        ) ?: incidentEngine.advance(nowMs),
                         )
 
                     if (classification.isEmergency) {
@@ -306,7 +328,7 @@ class AudioMonitoringService : Service() {
         classification: ClassificationResult,
         existing: List<AlertEvent>,
     ): List<AlertEvent> {
-        if (classification.severity == SoundSeverity.None) return existing
+        if (classification.severity == SoundSeverity.None || classification.severity == SoundSeverity.Low) return existing
         val now = System.currentTimeMillis()
         if (classification.category == lastRecordedCategory && now - lastRecordedAt < 15_000L) return existing
         lastRecordedCategory = classification.category

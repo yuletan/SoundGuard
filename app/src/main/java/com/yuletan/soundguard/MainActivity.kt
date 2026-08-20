@@ -105,6 +105,7 @@ private enum class AppScreen {
     Terms,
     BeneficiaryDashboard,
     CaregiverDashboard,
+    Lab,
     Chat,
     ChatList,
     Settings,
@@ -166,7 +167,10 @@ class MainActivity : ComponentActivity() {
     // Role Switch Dialog States
     private var showBlockedSwitchDialog by mutableStateOf(false)
     private var blockedActiveConnectionsCount by mutableStateOf(0)
+    private var blockedConnections by mutableStateOf<List<CareClient.RawConnection>>(emptyList())
     private var showConfirmSwitchDialog by mutableStateOf(false)
+    private var showClearChatConfirm by mutableStateOf(false)
+    private var pendingClearChatBeneficiaryId by mutableStateOf<String?>(null)
 
     private val authClient by lazy { AuthClient(this) }
     private val profileClient by lazy { ProfileClient(this) }
@@ -363,8 +367,19 @@ class MainActivity : ComponentActivity() {
                             onIncidentResponse = { response -> AudioMonitoringService.respondToIncident(response) },
                             onLinkDemoCaregiver = { demoCaregiverLinked = true },
                             onOpenSettings = { screen = AppScreen.Settings },
+                            onOpenLab = { screen = AppScreen.Lab },
                             onRefresh = { refreshBeneficiaryData() },
                             onOpenChatList = { openChatList() },
+                        )
+                        AppScreen.Lab -> MicLabScreen(
+                            audioState = liveAudioState,
+                            onToggleMonitoring = {
+                                if (liveAudioState.isMonitoring) AudioMonitoringService.stop(this@MainActivity)
+                                else if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) AudioMonitoringService.start(this@MainActivity)
+                                else requestAppPermissions()
+                            },
+                            onClear = { AudioMonitoringService.clearProbeLog() },
+                            onBack = { screen = AppScreen.BeneficiaryDashboard },
                         )
                         AppScreen.CaregiverDashboard -> CaregiverDashboard(
                             fullName = fullName,
@@ -411,6 +426,13 @@ class MainActivity : ComponentActivity() {
                                 },
                                 onRefresh = {
                                     selectedChatPartner?.let { partner -> loadChatMessages(partner.partnerId) }
+                                },
+                                onClearChat = {
+                                    val bid = selectedChatPartner?.partnerId
+                                    if (bid != null && selectedRole.equals("caregiver", ignoreCase = true)) {
+                                        pendingClearChatBeneficiaryId = bid
+                                        showClearChatConfirm = true
+                                    }
                                 },
                             )
                         }
@@ -535,16 +557,79 @@ class MainActivity : ComponentActivity() {
                             onDismissRequest = { showBlockedSwitchDialog = false },
                             title = { Text("Cannot Switch Role", fontWeight = FontWeight.Bold) },
                             text = {
-                                Text(
-                                    "You currently have $blockedActiveConnectionsCount active care connection(s). " +
-                                        "To protect ongoing safety monitoring, you must remove all connections before switching your account role.",
-                                )
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text(
+                                        "You currently have $blockedActiveConnectionsCount active care connection(s). " +
+                                            "To protect ongoing safety monitoring, you must remove all connections before switching your account role.",
+                                    )
+                                    if (blockedConnections.isNotEmpty()) {
+                                        Text(
+                                            "Stuck? Your dashboard says \"no caregivers linked\" because you are viewing the wrong role's list, or RLS hid profiles — but the server still has $blockedActiveConnectionsCount active connection(s). Use \"Force remove all\" below to clear them.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.ink500,
+                                        )
+                                    }
+                                }
                             },
                             confirmButton = {
                                 Button(onClick = { showBlockedSwitchDialog = false }) {
                                     Text("Got It")
                                 }
                             },
+                            dismissButton = if (blockedConnections.isNotEmpty()) {
+                                {
+                                    TextButton(
+                                        onClick = {
+                                            val ids = blockedConnections.map { it.id }
+                                            showBlockedSwitchDialog = false
+                                            lifecycleScope.launch {
+                                                var lastErr: String? = null
+                                                for (id in ids) {
+                                                    careClient.removeCareConnection(id)
+                                                        .onFailure { lastErr = it.message }
+                                                }
+                                                careClient.fetchAllMyActiveConnectionIds()
+                                                    .onSuccess { remaining -> blockedConnections = remaining }
+                                                if (lastErr != null) {
+                                                    Toast.makeText(this@MainActivity, lastErr, Toast.LENGTH_LONG).show()
+                                                } else {
+                                                    Toast.makeText(this@MainActivity, "Connections cleared. You can now switch your role.", Toast.LENGTH_SHORT).show()
+                                                    refreshBeneficiaryData(); refreshCaregiverData()
+                                                }
+                                            }
+                                        }
+                                    ) { Text("Force remove all") }
+                                }
+                            } else null,
+                        )
+                    }
+
+                    if (showClearChatConfirm) {
+                        AlertDialog(
+                            onDismissRequest = { showClearChatConfirm = false; pendingClearChatBeneficiaryId = null },
+                            title = { Text("Clear chat history?", fontWeight = FontWeight.Bold) },
+                            text = { Text("This permanently deletes all incident alerts for this beneficiary's chat. Snapshots linked to those incidents will be removed. This cannot be undone.") },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        val bid = pendingClearChatBeneficiaryId
+                                        showClearChatConfirm = false
+                                        pendingClearChatBeneficiaryId = null
+                                        if (bid != null) lifecycleScope.launch {
+                                            IncidentClient(this@MainActivity).clearIncidentsForPartnerAsCaregiver(bid)
+                                                .onSuccess {
+                                                    chatMessages = emptyList()
+                                                    Toast.makeText(this@MainActivity, "Chat cleared.", Toast.LENGTH_SHORT).show()
+                                                }
+                                                .onFailure {
+                                                    Toast.makeText(this@MainActivity, it.message ?: "Could not clear chat.", Toast.LENGTH_LONG).show()
+                                                }
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                ) { Text("Clear chat") }
+                            },
+                            dismissButton = { TextButton(onClick = { showClearChatConfirm = false; pendingClearChatBeneficiaryId = null }) { Text("Cancel") } },
                         )
                     }
 
@@ -626,18 +711,23 @@ class MainActivity : ComponentActivity() {
                         if (loadedSessionUserId != null && loadedSessionUserId != currentUserId) {
                             resetAccountState()
                         }
-                        loadedSessionUserId = currentUserId
-                        PushTokenRegistrar.register(this@MainActivity)
-                        fullName = profile.fullName
-                        email = profile.email
-                        phone = profile.phone
-                        if (profile.role.equals("beneficiary", ignoreCase = true)) {
-                            profileClient.fetchBeneficiarySettings()
-                                .onSuccess { autoApproveCameraRequests = it.autoApproveCameraRequests }
+                        if (loadedSessionUserId == currentUserId && selectedRole != null && profile.role.isNotBlank() &&
+                            !profile.role.equals(selectedRole, ignoreCase = true)) {
+                            // Don't clobber the role we just switched to; another stale fetchMyProfile racing.
+                        } else {
+                            loadedSessionUserId = currentUserId
+                            PushTokenRegistrar.register(this@MainActivity)
+                            fullName = profile.fullName
+                            email = profile.email
+                            phone = profile.phone
+                            if (profile.role.equals("beneficiary", ignoreCase = true)) {
+                                profileClient.fetchBeneficiarySettings()
+                                    .onSuccess { autoApproveCameraRequests = it.autoApproveCameraRequests }
+                            }
+                            selectedRole = profile.role
+                                .takeUnless { it.equals("null", ignoreCase = true) || it.isBlank() }
+                                ?.replaceFirstChar { it.uppercase() }
                         }
-                        selectedRole = profile.role
-                            .takeUnless { it.equals("null", ignoreCase = true) || it.isBlank() }
-                            ?.replaceFirstChar { it.uppercase() }
 
                         if (profile.setupCompletedAt != null) {
                             if (profile.role.equals("caregiver", ignoreCase = true)) {
@@ -783,20 +873,28 @@ class MainActivity : ComponentActivity() {
     private fun handleRoleSwitchRequest() {
         dashboardLoading = true
         lifecycleScope.launch {
-            careClient.countActiveConnections()
-                .onSuccess { activeCount ->
-                    dashboardLoading = false
-                    if (activeCount > 0) {
-                        blockedActiveConnectionsCount = activeCount
-                        showBlockedSwitchDialog = true
-                    } else {
-                        showConfirmSwitchDialog = true
-                    }
+            val detailed = careClient.fetchAllMyActiveConnectionIds()
+            val fallbackCount = if (detailed.isSuccess) null else careClient.countActiveConnections().getOrNull()
+            val rawConnections = detailed.getOrNull()
+            val activeCount = rawConnections?.size ?: fallbackCount ?: 0
+            dashboardLoading = false
+            if (activeCount > 0) {
+                blockedActiveConnectionsCount = activeCount
+                blockedConnections = rawConnections ?: emptyList()
+                val wasShowingBeneficiary = selectedRole.equals("beneficiary", ignoreCase = true)
+                if (wasShowingBeneficiary && connectedCaregivers.isEmpty()) {
+                    refreshBeneficiaryData()
+                } else if (!wasShowingBeneficiary && monitoredBeneficiaries.isEmpty()) {
+                    refreshCaregiverData()
                 }
-                .onFailure {
-                    dashboardLoading = false
-                    showConfirmSwitchDialog = true
-                }
+                showBlockedSwitchDialog = true
+            } else {
+                blockedConnections = emptyList()
+                showConfirmSwitchDialog = true
+            }
+            if (detailed.isFailure && fallbackCount == null) {
+                dashboardMessage = detailed.exceptionOrNull()?.message
+            }
         }
     }
 
@@ -1816,6 +1914,7 @@ private fun BeneficiaryDashboard(
     onOpenCaregiverChat: (ChatPreview) -> Unit,
     onLinkDemoCaregiver: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenLab: () -> Unit = {},
     onRefresh: () -> Unit,
     onOpenChatList: () -> Unit = {},
 ) {
@@ -2056,6 +2155,10 @@ private fun BeneficiaryDashboard(
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         TestToolButton(
+                            title = "Mic lab — real YAMNet bench",
+                            onClick = onOpenLab,
+                        )
+                        TestToolButton(
                             title = "Simulate glass break",
                             onClick = { onSimulateSound("emergency", "Glass break", 0.91f, true) },
                         )
@@ -2151,7 +2254,7 @@ private fun BeneficiaryDashboard(
         }
     }
 
-    // Details Modal Sheet
+    // Details Modal Sheet — now shows live sound type + live confidence so you can verify it's working
     if (showDetailsSheet) {
         ModalBottomSheet(
             onDismissRequest = { showDetailsSheet = false },
@@ -2162,14 +2265,61 @@ private fun BeneficiaryDashboard(
                     .fillMaxWidth()
                     .padding(24.dp)
                     .navigationBarsPadding()
+                    .verticalScroll(rememberScrollState()),
             ) {
                 Text("Live Audio Classification Details", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(12.dp))
                 Text("Classifier: Local TensorFlow Lite Audio Model", style = MaterialTheme.typography.bodyMedium)
-                Text("Status: ${if (audioState.isMonitoring) "Actively processing continuous audio buffer" else "Idle"}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.ink500)
+                Text(
+                    "Status: ${if (audioState.isMonitoring) "Actively processing continuous audio buffer" else "Idle"}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.ink500,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = if (audioState.isMonitoring) "Hearing: ${audioState.displayLabel}" else "Hearing: — (monitoring paused)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (audioState.isEmergency) MaterialTheme.colorScheme.danger else MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "Category: ${audioState.soundCategory}  •  Mic ${(audioState.amplitude * 100).toInt()}%  •  updated ${if (audioState.lastFrameAtMs == 0L) "—" else "${(System.currentTimeMillis() - audioState.lastFrameAtMs) / 1000}s ago"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.ink500,
+                )
+                Spacer(Modifier.height(10.dp))
+                ConfidenceBar(audioState.confidence, "Live Confidence")
+                if (audioState.topCandidates.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text("Top candidates (live)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.ink700)
+                    Spacer(Modifier.height(6.dp))
+                    audioState.topCandidates.take(3).forEach { c ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(c.displayLabel, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                            Text("${(c.score * 100).toInt()}%", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                        }
+                        ConfidenceBar(c.score, "")
+                    }
+                    if (audioState.debugText.isNotBlank()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text("Raw: ${audioState.debugText}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                    }
+                }
+                if (!audioState.isMonitoring) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Start monitoring to see live confidence update in real time.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.ink500,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Tip: play a short clip from a second device near the mic — the bench logs what YAMNet actually sent back.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
                 Spacer(Modifier.height(8.dp))
-                ConfidenceBar(audioState.activeIncident?.confidence ?: 0.0f, "Live Confidence")
-                Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = { showDetailsSheet = false },
                     modifier = Modifier.fillMaxWidth().height(44.dp),
@@ -2178,7 +2328,119 @@ private fun BeneficiaryDashboard(
                 ) {
                     Text("Close Details", fontWeight = FontWeight.Bold)
                 }
+                Spacer(Modifier.height(8.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun MicLabScreen(
+    audioState: LiveAudioState,
+    onToggleMonitoring: () -> Unit,
+    onClear: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val clipboard = LocalContext.current.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    Column(
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).statusBarsPadding().navigationBarsPadding(),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Outlined.ArrowBack, contentDescription = "Back", tint = MaterialTheme.colorScheme.onSurface)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("Mic lab — YAMNet bench", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 1.dp)
+        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text(if (audioState.isMonitoring) "Listening — play a short clip near the phone mic" else "Monitoring paused", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = if (audioState.isEmergency) MaterialTheme.colorScheme.danger else MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(4.dp))
+                    Text("Now hearing: ${audioState.displayLabel}  •  ${audioState.soundCategory}  •  ${(audioState.confidence * 100).toInt()}%", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Mic: ${(audioState.amplitude * 100).toInt()}%  •  ${if (audioState.lastFrameAtMs == 0L) "no frames yet" else "updated ${(System.currentTimeMillis() - audioState.lastFrameAtMs) / 1000}s ago"}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                    Spacer(Modifier.height(8.dp))
+                    ConfidenceBar(audioState.confidence, "Live Confidence")
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onToggleMonitoring, modifier = Modifier.weight(1f).height(42.dp), shape = RoundedCornerShape(999.dp), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) {
+                            Text(if (audioState.isMonitoring) "Stop" else "Start listening", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                        }
+                        OutlinedButton(onClick = onClear, modifier = Modifier.weight(1f).height(42.dp), shape = RoundedCornerShape(999.dp)) {
+                            Text("Clear log", fontWeight = FontWeight.Bold, fontSize = 12.5.sp)
+                        }
+                    }
+                    if (!audioState.isMonitoring) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Tip: start listening, then play 2–5s clips loudly near the mic. Keep raw log below to check accuracy.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                    }
+                }
+            }
+            if (audioState.topCandidates.isNotEmpty()) {
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Text("Why it did (or didn't) alert", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        audioState.topCandidates.take(3).forEach { c ->
+                            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(c.displayLabel, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                                    Text(c.category, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                                }
+                                Text("${(c.score * 100).toInt()}%", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                            }
+                            ConfidenceBar(c.score, "")
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text("Thresholds: smoke/alarm 65%, glass break 45%, fire 70% — needs 2 consistent frames. TV/music >45% raises them +20%.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                        if (audioState.debugText.isNotBlank()) {
+                            Spacer(Modifier.height(6.dp))
+                            Text("Raw YAMNet top indices: ${audioState.debugText}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                        }
+                    }
+                }
+            }
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Text("Live timeline (newest first)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                        TextButton(onClick = { val dump = audioState.probeLog.reversed().joinToString("\n") { "${it.label} [${it.category}] ${(it.confidence * 100).toInt()}% ${if (it.isEmergency) "ALERT" else ""}" }; clipboard.setPrimaryClip(ClipData.newPlainText("SoundGuard lab log", dump.ifBlank { "no frames yet" })); }) { Text("Copy") }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    if (audioState.probeLog.isEmpty()) {
+                        Text("No frames yet — start listening and make some sound near the mic (or use a clip). The mic level above must jump above ~10%.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                    } else {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            audioState.probeLog.reversed().take(24).forEach { snap ->
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(snap.label, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = if (snap.isEmergency) MaterialTheme.colorScheme.danger else MaterialTheme.colorScheme.onSurface)
+                                        Text("${snap.category} · ${(snap.confidence * 100).toInt()}%${if (snap.isEmergency) " · ALERT" else ""}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.ink500)
+                                    }
+                                    Text("${(System.currentTimeMillis() - snap.ts) / 1000}s ago", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.ink300)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text("Clips to test with (use a second device, play 3–8s loudly near the mic)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    Text("Search YouTube / Freesound for short, isolated clips — don't use music mixes:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                    Spacer(Modifier.height(6.dp))
+                    Text("• Glass break — \"glass breaking sound effect\" (3s, single smash)\n• Smoke alarm — \"smoke alarm beep sound\" (continuous 3×beeps)\n• Siren — \"fire alarm siren\"\n• Baby crying — \"baby crying sound\"\n• Dog barking — \"dog bark isolated\"\n• Thunder — \"thunder clap\"\n• Water / tap running\n• Door knock — \"loud door knock\"\n• TV / music (negative control — should raise threshold, not alert)\n• Silence / room tone (mic should sit ~5–10%)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface, lineHeight = 17.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text("How to judge: play the same clip 3×. You want the same label in the top 3 with ≥30% (emergency) or ≥65% (sirens) — check the timeline.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                }
+            }
+            Spacer(Modifier.height(16.dp))
         }
     }
 }

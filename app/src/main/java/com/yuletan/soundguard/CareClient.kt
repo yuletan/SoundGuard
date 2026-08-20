@@ -268,6 +268,48 @@ class CareClient(context: Context) {
         }
     }
 
+    data class RawConnection(
+        val id: String,
+        val beneficiaryId: String,
+        val caregiverId: String,
+        val status: String,
+        val isPrimary: Boolean,
+    )
+
+    suspend fun fetchAllMyActiveConnectionIds(): Result<List<RawConnection>> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.getToken()
+            val userId = authClient.userId() ?: error("No user found.")
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
+                "/rest/v1/care_connections?or=(beneficiary_id.eq.$userId,caregiver_id.eq.$userId)&status=eq.active&select=id,beneficiary_id,caregiver_id,status,is_primary"
+            val raw = executeGet(endpoint, token)
+            val array = JSONArray(raw)
+            (0 until array.length()).map { i ->
+                val o = array.getJSONObject(i)
+                RawConnection(
+                    id = o.getString("id"),
+                    beneficiaryId = o.getString("beneficiary_id"),
+                    caregiverId = o.getString("caregiver_id"),
+                    status = o.optString("status", "active"),
+                    isPrimary = o.optBoolean("is_primary", false),
+                )
+            }
+        }
+    }
+
+    suspend fun forceClearAllMyActiveConnections(): Result<Int> = withContext(Dispatchers.IO) {
+        runCatching {
+            val ids = fetchAllMyActiveConnectionIds().getOrThrow()
+            if (ids.isEmpty()) return@runCatching 0
+            var removed = 0
+            for (c in ids) {
+                removeCareConnection(c.id).getOrThrow()
+                removed++
+            }
+            removed
+        }
+    }
+
     private fun fetchProfilesByIds(ids: List<String>, token: String): Map<String, JSONObject> {
         if (ids.isEmpty()) return emptyMap()
         val inFilter = "in.(" + ids.joinToString(",") + ")"

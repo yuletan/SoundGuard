@@ -19,36 +19,66 @@ class ChatRepository(context: Context) {
     private val snapshotClient = SnapshotClient(context)
     private val careClient = CareClient(context)
 
+    private val HIDDEN_SEVERITIES = setOf("low")
+
+    private fun isHiddenSeverity(value: String) = value.trim().lowercase() in HIDDEN_SEVERITIES
+
     suspend fun buildChatMessages(partnerId: String, isCaregiverView: Boolean): Result<List<ChatMessage>> = withContext(Dispatchers.IO) {
         runCatching {
             val messages = mutableListOf<ChatMessage>()
 
             if (isCaregiverView) {
                 val notifications = notificationClient.fetchForConnection(partnerId).getOrNull().orEmpty()
-                for (notification in notifications) {
-                    val ts = parseIsoTimestamp(notification.incidentStartedAt)
-                        ?: parseIsoTimestamp(notification.createdAt)
-                        ?: continue
-                    messages.add(
+                    .filter { !isHiddenSeverity(it.severity) }
+                val incidents = incidentClient.fetchIncidentsForBeneficiary(partnerId).getOrNull().orEmpty()
+                    .filter { !isHiddenSeverity(it.severity) }
+
+                val primary = if (incidents.isNotEmpty()) {
+                    incidents.map { inc ->
+                        val ts = parseIsoTimestamp(inc.startedAt) ?: Long.MAX_VALUE
                         ChatMessage.Incident(
-                            id = notification.incidentId,
-                            label = notification.soundLabel.ifBlank { "Alert" },
-                            severity = notification.severity,
-                            confidence = notification.confidence,
-                            status = notification.status,
+                            id = inc.id,
+                            label = inc.label.ifBlank { "Alert" },
+                            severity = inc.severity,
+                            confidence = inc.confidence,
+                            status = inc.status,
                             timestamp = ts,
                         )
-                    )
-                    if (notification.status == "acknowledged") {
+                    }.filter { it.timestamp != Long.MAX_VALUE }
+                } else {
+                    notifications.mapNotNull { n ->
+                        val ts = parseIsoTimestamp(n.incidentStartedAt)
+                            ?: parseIsoTimestamp(n.createdAt)
+                            ?: return@mapNotNull null
+                        ChatMessage.Incident(
+                            id = n.incidentId,
+                            label = n.soundLabel.ifBlank { "Alert" },
+                            severity = n.severity,
+                            confidence = n.confidence,
+                            status = n.status,
+                            timestamp = ts,
+                        )
+                    }
+                }
+
+                messages.addAll(primary)
+
+                for (n in notifications) {
+                    if (n.status == "acknowledged") {
+                        val ts = parseIsoTimestamp(n.incidentStartedAt)
+                            ?: parseIsoTimestamp(n.createdAt)
+                            ?: continue
                         messages.add(
                             ChatMessage.Acknowledgment(timestamp = ts + 1000, byName = "Caregiver")
                         )
                     }
                 }
 
-                appendSnapshots(messages, notifications.map { it.incidentId }.distinct())
+                val incidentIds = (primary.map { (it as ChatMessage.Incident).id } + notifications.map { it.incidentId }).distinct()
+                appendSnapshots(messages, incidentIds)
             } else {
                 val incidents = incidentClient.fetchOwnIncidents().getOrNull().orEmpty()
+                    .filter { !isHiddenSeverity(it.severity) }
                 for (incident in incidents) {
                     val ts = parseIsoTimestamp(incident.startedAt) ?: continue
                     messages.add(
@@ -120,13 +150,28 @@ class ChatRepository(context: Context) {
 
             for (beneficiary in beneficiaries) {
                 val notifications = notificationClient.fetchForConnection(beneficiary.beneficiaryId).getOrNull().orEmpty()
+                    .filter { !isHiddenSeverity(it.severity) }
+                val incidents = incidentClient.fetchIncidentsForBeneficiary(beneficiary.beneficiaryId).getOrNull().orEmpty()
+                    .filter { !isHiddenSeverity(it.severity) }
+
                 val lastNotification = notifications.lastOrNull()
-                val ts = if (lastNotification != null) parseIsoTimestamp(lastNotification.createdAt) ?: System.currentTimeMillis() else System.currentTimeMillis()
-                val unread = notifications.count { it.status != "acknowledged" }
-                val lastMsg = if (lastNotification != null) {
-                    "${lastNotification.soundLabel.ifBlank { "Alert" }} • ${lastNotification.severity}"
-                } else {
-                    "No incidents yet"
+                val lastIncident = incidents.maxByOrNull { parseIsoTimestamp(it.startedAt) ?: 0L }
+                val notifTs = lastNotification?.let { parseIsoTimestamp(it.createdAt) } ?: 0L
+                val incidentTs = lastIncident?.let { parseIsoTimestamp(it.startedAt) } ?: 0L
+                val useIncident = incidentTs >= notifTs && lastIncident != null
+                val ts = when {
+                    useIncident -> incidentTs
+                    lastNotification != null -> notifTs
+                    else -> System.currentTimeMillis()
+                }
+                val unread = maxOf(
+                    notifications.count { it.status != "acknowledged" },
+                    if (useIncident && lastIncident != null) 1 else 0
+                )
+                val lastMsg = when {
+                    useIncident && lastIncident != null -> "${lastIncident.label.ifBlank { "Alert" }} • ${lastIncident.severity}"
+                    lastNotification != null -> "${lastNotification.soundLabel.ifBlank { "Alert" }} • ${lastNotification.severity}"
+                    else -> "No incidents yet"
                 }
                 previews.add(
                     ChatPreview(
