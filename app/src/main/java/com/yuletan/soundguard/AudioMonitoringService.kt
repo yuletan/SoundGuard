@@ -14,6 +14,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -68,7 +69,9 @@ class AudioMonitoringService : Service() {
     companion object {
         private const val TAG = "AudioMonitoringService"
         private const val CHANNEL_ID = "soundguard_audio_monitoring"
+        private const val ALERT_CHANNEL_ID = "soundguard_alerts"
         private const val NOTIFICATION_ID = 1001
+        private const val EMERGENCY_NOTIFICATION_ID = 2001
 
         const val ACTION_START = "com.yuletan.soundguard.action.START_MONITORING"
         const val ACTION_STOP = "com.yuletan.soundguard.action.STOP_MONITORING"
@@ -148,6 +151,7 @@ class AudioMonitoringService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + serviceJob)
     private var audioRecord: AudioRecord? = null
     private var classifier: SoundClassifier? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -187,9 +191,31 @@ class AudioMonitoringService : Service() {
             amplitude = 0.08f,
         )
 
+        acquireWakeLock()
+
         serviceScope.launch {
             recordAndClassifyLoop()
         }
+    }
+
+    /**
+     * Hold a partial wake lock while monitoring so classification keeps running
+     * when the screen is off / phone is locked (device is asleep but powered on).
+     */
+    private fun acquireWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        runCatching {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "SoundGuard::AudioMonitoring").apply {
+                setReferenceCounted(false)
+                acquire(12 * 60 * 60 * 1000L)
+            }
+        }.onFailure { Log.w(TAG, "Could not acquire wake lock: ${it.message}") }
+    }
+
+    private fun releaseWakeLock() {
+        runCatching { wakeLock?.takeIf { it.isHeld }?.release() }
+        wakeLock = null
     }
 
     private fun recordAndClassifyLoop() {
@@ -281,6 +307,24 @@ class AudioMonitoringService : Service() {
                     }
                     val nowMs = System.currentTimeMillis()
                     val snap = ProbeSnapshot(classification.displayLabel, classification.category, classification.confidence, classification.isEmergency, nowMs)
+                    val nextIncident = if (classification.isEmergency) {
+                        incidentEngine.detect(
+                            classification.displayLabel,
+                            classification.severity,
+                            classification.confidence,
+                            nowMs,
+                        ) ?: incidentEngine.advance(nowMs)
+                    } else {
+                        incidentEngine.advance(nowMs)
+                    }
+                    val keepIncident = _audioState.value.activeIncident
+                    val resolvedOrAck = nextIncident?.status in setOf(IncidentStatus.FalseAlarm, IncidentStatus.CaregiverAcknowledged, IncidentStatus.Resolved)
+                    val incidentForState = when {
+                        classification.isEmergency -> nextIncident
+                        keepIncident?.status == IncidentStatus.WaitingUser -> keepIncident
+                        resolvedOrAck == true -> null
+                        else -> nextIncident ?: keepIncident
+                    }
                     _audioState.value = _audioState.value.copy(
                         soundCategory = classification.category,
                         displayLabel = classification.displayLabel,
@@ -296,16 +340,12 @@ class AudioMonitoringService : Service() {
                         debugText = classification.debugText,
                         lastFrameAtMs = nowMs,
                         probeLog = (_audioState.value.probeLog + snap).takeLast(40),
-                        activeIncident = incidentEngine.detect(
-                            classification.displayLabel,
-                            classification.severity,
-                            classification.confidence,
-                            nowMs,
-                        ) ?: incidentEngine.advance(nowMs),
+                        activeIncident = incidentForState,
                         )
 
                     if (classification.isEmergency) {
                         updateNotification("\uD83D\uDEA8 Emergency: ${classification.displayLabel}")
+                        showEmergencyAlertNotification(classification.displayLabel)
                     }
                 }
 
@@ -362,6 +402,7 @@ class AudioMonitoringService : Service() {
         simulatedUntil = 0L
         classifier?.resetState()
         incidentEngine.reset()
+        releaseWakeLock()
         _audioState.value = _audioState.value.copy(
             isMonitoring = false,
             displayLabel = "Monitoring Paused",
@@ -382,6 +423,7 @@ class AudioMonitoringService : Service() {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java)
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "SoundGuard Audio Monitoring",
@@ -390,9 +432,52 @@ class AudioMonitoringService : Service() {
                 description = "Shows live audio monitoring status for safety support"
                 setShowBadge(false)
             }
-            val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
+
+            val alertChannel = NotificationChannel(
+                ALERT_CHANNEL_ID,
+                "SoundGuard alerts",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Urgent emergency sound alerts from SoundGuard"
+                enableVibration(true)
+            }
+            manager?.createNotificationChannel(alertChannel)
         }
+    }
+
+    /**
+     * High-priority heads-up notification shown when a high-risk sound is
+     * detected — visible on the lock screen even while monitoring in the
+     * background with the screen off.
+     */
+    private fun showEmergencyAlertNotification(label: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        val launchIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            EMERGENCY_NOTIFICATION_ID,
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+            .setContentTitle("Emergency sound detected")
+            .setContentText("$label was detected. Caregivers are being alerted — are you okay?")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("$label was detected. Caregivers are being alerted — are you okay?"))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.notify(EMERGENCY_NOTIFICATION_ID, notification)
     }
 
     private fun buildNotification(statusText: String): Notification {
@@ -423,6 +508,7 @@ class AudioMonitoringService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         stopMonitoring()
+        releaseWakeLock()
         serviceJob.cancel()
         serviceInstance = null
     }

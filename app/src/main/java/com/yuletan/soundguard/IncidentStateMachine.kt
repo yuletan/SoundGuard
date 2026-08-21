@@ -155,7 +155,9 @@ class IncidentStateMachine(
         if (next.status in TERMINAL_STATUSES) {
             history.addLast(next)
             while (history.size > maxHistory) history.removeFirst()
-            if (next.status != IncidentStatus.CaregiverAcknowledged) active = next
+            if (next.status == IncidentStatus.CaregiverAcknowledged || next.status == IncidentStatus.FalseAlarm || next.status == IncidentStatus.Resolved) {
+                active = null
+            }
         }
         return next
     }

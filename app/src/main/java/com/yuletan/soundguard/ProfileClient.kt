@@ -117,7 +117,7 @@ class ProfileClient(context: Context) {
         monitoringConsent: Boolean,
         shareWithCaregiver: Boolean = false,
         cameraRequestsConsent: Boolean = false,
-        autoApproveCameraRequests: Boolean = true,
+        autoApproveCameraRequests: Boolean = false,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val token = authClient.getToken()
@@ -176,7 +176,7 @@ class ProfileClient(context: Context) {
                     ?.bufferedReader()?.use { it.readText() }.orEmpty()
                 if (code !in 200..299) error("Beneficiary settings fetch failed with HTTP $code: $response")
                 val row = org.json.JSONArray(response).optJSONObject(0)
-                BeneficiarySettings(row?.optBoolean("auto_approve_camera_requests", true) ?: true)
+                BeneficiarySettings(row?.optBoolean("auto_approve_camera_requests", false) ?: false)
             } finally {
                 connection.disconnect()
             }

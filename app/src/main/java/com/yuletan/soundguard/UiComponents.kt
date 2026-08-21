@@ -55,6 +55,82 @@ import androidx.compose.ui.unit.sp
 
 enum class IncidentStatusTone { Success, Warning, Danger, Neutral }
 
+/** Home page risk: High only if a high-severity alert fired within the last hour; otherwise All Quiet. */
+enum class RiskTier { High, Medium, Quiet }
+
+data class RiskSummary(
+    val tier: RiskTier,
+    val lastAlertLabel: String? = null,
+    val lastAlertAtMs: Long? = null,
+)
+
+private const val RISK_WINDOW_MS = 60L * 60 * 1000
+
+fun parseIsoMillis(iso: String?): Long? = iso?.let {
+    runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull()
+}
+
+fun computeRiskSummary(incidents: List<SharedIncident>): RiskSummary {
+    val cutoff = System.currentTimeMillis() - RISK_WINDOW_MS
+    var newestHighInWindow: SharedIncident? = null
+    var newestHighInWindowTs: Long = 0L
+    for (incident in incidents) {
+        if (incident.severity.trim().lowercase() != "high") continue
+        val ts = parseIsoMillis(incident.startedAt) ?: continue
+        if (ts < cutoff) continue
+        if (newestHighInWindow == null || ts > newestHighInWindowTs) {
+            newestHighInWindow = incident
+            newestHighInWindowTs = ts
+        }
+    }
+    if (newestHighInWindow != null) {
+        return RiskSummary(
+            tier = RiskTier.High,
+            lastAlertLabel = newestHighInWindow.label,
+            lastAlertAtMs = newestHighInWindowTs,
+        )
+    }
+    return RiskSummary(tier = RiskTier.Quiet, lastAlertLabel = null, lastAlertAtMs = null)
+}
+
+fun formatLastAlertAgo(atMs: Long?): String? {
+    if (atMs == null) return null
+    val minutes = (System.currentTimeMillis() - atMs) / 60_000
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "${minutes}m ago"
+        minutes < 60 * 24 -> "${minutes / 60}h ago"
+        else -> "${minutes / (60 * 24)}d ago"
+    }
+}
+
+fun riskTierChipLabel(tier: RiskTier): String = when (tier) {
+    RiskTier.High -> "HIGH RISK"
+    RiskTier.Medium -> "MEDIUM RISK"
+    RiskTier.Quiet -> "ALL QUIET"
+}
+
+fun riskTierTone(tier: RiskTier): IncidentStatusTone = when (tier) {
+    RiskTier.High -> IncidentStatusTone.Danger
+    RiskTier.Medium -> IncidentStatusTone.Warning
+    RiskTier.Quiet -> IncidentStatusTone.Success
+}
+
+/** Section title rendered above a card, so content boxes stay uncluttered. */
+@Composable
+fun SectionLabel(
+    text: String,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = modifier.padding(start = 4.dp, top = 4.dp, bottom = 6.dp),
+    )
+}
+
 @Composable
 fun StatusChip(
     label: String,
@@ -167,52 +243,125 @@ fun ConfidenceBar(confidence: Float, label: String = "Confidence") {
 }
 
 @Composable
-fun OtpCodeInput(
+fun PairingCodeInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    length: Int = 6,
+    placeholder: String = "",
+) {
+    val filtered = value.filter(Char::isLetterOrDigit).uppercase().take(length)
+    BasicTextField(
+        value = filtered,
+        onValueChange = { onValueChange(it.filter(Char::isLetterOrDigit).uppercase().take(length)) },
+        modifier = modifier,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+        decorationBox = {
+            CodeBoxRow(code = filtered, length = length)
+        },
+    )
+}
+
+@Composable
+private fun CodeBoxRow(code: String, length: Int, monospace: Boolean = true) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(length) { index ->
+            val char = code.getOrNull(index)?.toString() ?: ""
+            val isActive = code.length == index
+            Box(
+                modifier = Modifier
+                    .size(44.dp, 50.dp)
+                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+                    .border(
+                        1.6.dp,
+                        if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                        RoundedCornerShape(12.dp),
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (char.isNotEmpty()) {
+                    Text(
+                        text = char,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = if (monospace) FontFamily.Monospace else FontFamily.SansSerif,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                } else if (isActive) {
+                    Box(
+                        modifier = Modifier
+                            .width(2.dp)
+                            .height(22.dp)
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun CodeDigitRow(
+    code: String,
+    length: Int = 6,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        repeat(length) { index ->
+            val char = code.getOrNull(index)?.toString() ?: ""
+            Box(
+                modifier = Modifier
+                    .size(48.dp, 52.dp)
+                    .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
+                    .border(1.2.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = char,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun OtpPillInput(
     value: String,
     onValueChange: (String) -> Unit,
     modifier: Modifier = Modifier,
     length: Int = 6,
 ) {
+    val digitsOnly = value.filter(Char::isDigit).take(length)
     BasicTextField(
-        value = value,
-        onValueChange = { onValueChange(it.filter(Char::isLetterOrDigit).uppercase().take(length)) },
+        value = digitsOnly,
+        onValueChange = { onValueChange(it.filter(Char::isDigit).take(length)) },
         modifier = modifier,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
         decorationBox = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.4.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-            ) {
-                Text(
-                    text = "6-CHARACTER CODE",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.ink500,
-                    fontWeight = FontWeight.ExtraBold,
-                    letterSpacing = 0.6.sp,
-                )
-                Spacer(Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    repeat(length) { index ->
-                        val char = value.getOrNull(index)?.toString() ?: "—"
-                        Text(
-                            text = char,
-                            fontSize = 18.sp,
-                            fontWeight = if (index < value.length) FontWeight.Bold else FontWeight.Normal,
-                            fontFamily = FontFamily.Monospace,
-                            color = if (index < value.length) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.ink300,
-                        )
-                    }
-                }
-            }
+            CodeBoxRow(code = digitsOnly, length = length, monospace = false)
         },
     )
 }
+
+@Composable
+fun OtpCodeInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    length: Int = 6,
+) = OtpPillInput(value = value, onValueChange = onValueChange, modifier = modifier, length = length)
 
 @Composable
 fun CollapsibleSection(

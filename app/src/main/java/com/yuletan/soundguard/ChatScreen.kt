@@ -75,6 +75,7 @@ fun ChatScreen(
     isCaregiverView: Boolean,
     snapshotMessage: String?,
     activeIncidentBannerText: String? = null,
+    isUploadingPhoto: Boolean = false,
     onRequestPhoto: () -> Unit,
     onCall: () -> Unit,
     onBack: () -> Unit,
@@ -86,7 +87,7 @@ fun ChatScreen(
 
     LaunchedEffect(Unit) {
         while (true) {
-            delay(10_000L)
+            delay(20_000L)
             onRefresh()
         }
     }
@@ -208,7 +209,21 @@ fun ChatScreen(
             }
         }
 
-        // Optional Snapshot Status Message
+        if (isUploadingPhoto) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                Text("Uploading photo…", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
         if (snapshotMessage != null) {
             Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
                 Text(
