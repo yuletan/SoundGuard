@@ -30,7 +30,7 @@ const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const PUSH_SHARED_SECRET = Deno.env.get("PUSH_SHARED_SECRET") ?? "";
 
 let cachedSa: ServiceAccount | null = null;
-let serviceAccount(): ServiceAccount {
+function serviceAccount(): ServiceAccount {
   if (cachedSa) return cachedSa;
   const raw = Deno.env.get("FIREBASE_SERVICE_ACCOUNT");
   if (!raw) throw new Error("FIREBASE_SERVICE_ACCOUNT secret is not set");
