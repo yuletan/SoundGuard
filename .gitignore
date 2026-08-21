@@ -16,6 +16,9 @@ google-services.json
 *.keystore
 *.jks
 
+# Supabase CLI session state (may contain access tokens)
+supabase/.temp/
+
 # Model artifacts
 *.tflite
 *.onnx
