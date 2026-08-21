@@ -55,7 +55,7 @@ import androidx.compose.ui.unit.sp
 
 enum class IncidentStatusTone { Success, Warning, Danger, Neutral }
 
-/** 24h risk tier: all-quiet only when no medium/high alerts in the last day. */
+/** Home page risk: High only if a high-severity alert fired within the last hour; otherwise All Quiet. */
 enum class RiskTier { High, Medium, Quiet }
 
 data class RiskSummary(
@@ -64,7 +64,7 @@ data class RiskSummary(
     val lastAlertAtMs: Long? = null,
 )
 
-private const val RISK_WINDOW_MS = 24L * 60 * 60 * 1000
+private const val RISK_WINDOW_MS = 60L * 60 * 1000
 
 fun parseIsoMillis(iso: String?): Long? = iso?.let {
     runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull()
@@ -72,29 +72,25 @@ fun parseIsoMillis(iso: String?): Long? = iso?.let {
 
 fun computeRiskSummary(incidents: List<SharedIncident>): RiskSummary {
     val cutoff = System.currentTimeMillis() - RISK_WINDOW_MS
-    var tier = RiskTier.Quiet
-    var lastAlert: SharedIncident? = null
+    var newestHighInWindow: SharedIncident? = null
+    var newestHighInWindowTs: Long = 0L
     for (incident in incidents) {
-        val severity = incident.severity.trim().lowercase()
-        if (severity != "high" && severity != "medium") continue
+        if (incident.severity.trim().lowercase() != "high") continue
         val ts = parseIsoMillis(incident.startedAt) ?: continue
-        if (ts >= cutoff) {
-            if (severity == "high") return RiskSummary(
-                tier = RiskTier.High,
-                lastAlertLabel = incident.label,
-                lastAlertAtMs = ts,
-            )
-            tier = RiskTier.Medium
-        }
-        if (lastAlert == null || (parseIsoMillis(lastAlert.startedAt) ?: 0L) < ts) {
-            lastAlert = incident
+        if (ts < cutoff) continue
+        if (newestHighInWindow == null || ts > newestHighInWindowTs) {
+            newestHighInWindow = incident
+            newestHighInWindowTs = ts
         }
     }
-    return RiskSummary(
-        tier = tier,
-        lastAlertLabel = lastAlert?.label,
-        lastAlertAtMs = lastAlert?.let { parseIsoMillis(it.startedAt) },
-    )
+    if (newestHighInWindow != null) {
+        return RiskSummary(
+            tier = RiskTier.High,
+            lastAlertLabel = newestHighInWindow.label,
+            lastAlertAtMs = newestHighInWindowTs,
+        )
+    }
+    return RiskSummary(tier = RiskTier.Quiet, lastAlertLabel = null, lastAlertAtMs = null)
 }
 
 fun formatLastAlertAgo(atMs: Long?): String? {

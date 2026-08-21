@@ -132,7 +132,7 @@ class SoundClassifier(private val context: Context) {
 
         private val categoryRules = listOf(
             CategoryRule("speech", "Human Speech", SoundSeverity.None, false, idx(0..18)),
-            CategoryRule("crying", "Crying Detected", SoundSeverity.Medium, false, idx(19..23)),
+            CategoryRule("crying", "Crying Detected", SoundSeverity.High, true, idx(19..23)),
             CategoryRule("singing", "Singing", SoundSeverity.None, false, idx(24..32)),
             CategoryRule("human_body", "Cough / Sneeze / Snore", SoundSeverity.Medium, false, idx(33..60)),
             CategoryRule("crowd", "Crowd / Cheering", SoundSeverity.None, false, idx(61..66)),
@@ -148,7 +148,7 @@ class SoundClassifier(private val context: Context) {
             CategoryRule("aircraft", "Aircraft", SoundSeverity.None, false, idx(329..334)),
             CategoryRule("door", "Door / Doorbell / Knock", SoundSeverity.Medium, false, idx(348..354)),
             CategoryRule("household", "Household Sound", SoundSeverity.None, false, idx(355..381)),
-            CategoryRule("alarm_telephone", "Alarm / Telephone", SoundSeverity.High, true, idx(382..389)),
+            CategoryRule("alarm_telephone", "Alarm / Telephone", SoundSeverity.Medium, false, idx(382..389)),
             CategoryRule("siren_smoke", "Siren / Smoke Alarm", SoundSeverity.High, true, idx(390..396)),
             CategoryRule("mechanism", "Mechanical Sound", SoundSeverity.None, false, idx(397..411)),
             CategoryRule("construction", "Tool / Construction", SoundSeverity.None, false, idx(412..419)),
@@ -164,12 +164,11 @@ class SoundClassifier(private val context: Context) {
             "crying",
             "human_body",
             "door",
-            "fire",
-            "emergency_vehicle",
-            "alarm_telephone",
             "siren_smoke",
-            "explosion_gunshot",
+            "emergency_vehicle",
             "glass_break",
+            "explosion_gunshot",
+            "fire",
             "object_impact",
         )
 
@@ -197,12 +196,12 @@ class SoundClassifier(private val context: Context) {
 
         fun emergencyThresholdFor(category: String): Float {
             return when (category) {
-                "alarm_telephone",
+                "crying" -> 0.40f
                 "siren_smoke" -> 0.65f
                 "emergency_vehicle" -> 0.70f
-                "glass_break" -> 0.45f
-                "explosion_gunshot",
-                "fire" -> 0.70f
+                "glass_break" -> 0.40f
+                "explosion_gunshot" -> 0.60f
+                "fire" -> 0.50f
                 else -> Float.MAX_VALUE
             }
         }

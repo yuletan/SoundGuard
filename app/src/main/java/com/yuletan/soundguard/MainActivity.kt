@@ -20,6 +20,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -54,8 +55,10 @@ import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.People
+import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -90,7 +93,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -109,6 +114,7 @@ private enum class AppScreen {
     Setup,
     CameraTest,
     Terms,
+    Onboarding,
     BeneficiaryDashboard,
     CaregiverDashboard,
     Lab,
@@ -176,6 +182,11 @@ class MainActivity : ComponentActivity() {
     // Safety confirmation
     private var pendingRemoveConnectionId by mutableStateOf<String?>(null)
 
+    private var beneficiaryHighRiskDialogIncident by mutableStateOf<IncidentRecord?>(null)
+    private var caregiverHighRiskPopupNotification by mutableStateOf<CaregiverNotification?>(null)
+
+    private var devFakeCounter by mutableStateOf(0)
+
     // Role Switch Dialog States
     private var showBlockedSwitchDialog by mutableStateOf(false)
     private var blockedActiveConnectionsCount by mutableStateOf(0)
@@ -206,11 +217,12 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Load dark mode preference
+        // Load dark mode preference and camera readiness
         val prefs = getSharedPreferences("soundguard_settings", Context.MODE_PRIVATE)
         if (prefs.contains("dark_mode")) {
             darkModeEnabled = prefs.getBoolean("dark_mode", false)
         }
+        cameraReady = prefs.getBoolean("camera_ready", false)
 
         checkPermissionsState()
 
@@ -243,6 +255,17 @@ class MainActivity : ComponentActivity() {
                                     pendingSnapshotRequest = request
                                 }
                             }
+                    }
+                }
+            }
+        }
+
+        lifecycleScope.launch {
+            AudioMonitoringService.audioState.collect { state ->
+                val active = state.activeIncident
+                if (active != null && active.status == IncidentStatus.WaitingUser && selectedRole.equals("beneficiary", ignoreCase = true)) {
+                    if (beneficiaryHighRiskDialogIncident?.id != active.id) {
+                        beneficiaryHighRiskDialogIncident = active
                     }
                 }
             }
@@ -320,6 +343,8 @@ class MainActivity : ComponentActivity() {
                             },
                             onFinished = { capturedPath ->
                                 cameraReady = true
+                                getSharedPreferences("soundguard_settings", Context.MODE_PRIVATE)
+                                    .edit().putBoolean("camera_ready", true).apply()
                                 if (returnToPreviewAfterCamera) {
                                     demoPhotoPath = capturedPath
                                     demoSnapshotRequest?.let { request ->
@@ -356,6 +381,18 @@ class MainActivity : ComponentActivity() {
                             onAccept = {
                                 termsAccepted = true
                                 screen = AppScreen.Setup
+                            },
+                        )
+                        AppScreen.Onboarding -> OnboardingScreen(
+                            role = selectedRole,
+                            onConfirm = {
+                                if (selectedRole.equals("caregiver", ignoreCase = true)) {
+                                    screen = AppScreen.CaregiverDashboard
+                                    refreshCaregiverData()
+                                } else {
+                                    screen = AppScreen.BeneficiaryDashboard
+                                    refreshBeneficiaryData()
+                                }
                             },
                         )
                         AppScreen.BeneficiaryDashboard -> BeneficiaryDashboard(
@@ -400,6 +437,8 @@ class MainActivity : ComponentActivity() {
                             onLinkDemoCaregiver = { demoCaregiverLinked = true },
                             onOpenSettings = { screen = AppScreen.Settings },
                             onOpenLab = { screen = AppScreen.Lab },
+                            onTestHighRiskNotification = { sendTestHighRiskNotificationForBeneficiary() },
+                            onAddFakeCaregiver = { addFakeCaregiverLocal() },
                             onRefresh = { refreshBeneficiaryData() },
                             onOpenChatList = { openChatList() },
                         )
@@ -435,6 +474,8 @@ class MainActivity : ComponentActivity() {
                             onOpenSettings = { screen = AppScreen.Settings },
                             onRefresh = { refreshCaregiverData() },
                             onOpenChatList = { openChatList() },
+                            onTestHighRiskNotification = { sendTestHighRiskNotificationForCaregiver() },
+                            onAddFakeBeneficiary = { addFakeBeneficiaryLocal() },
                         )
                         AppScreen.Chat -> {
                             val activeIncident = liveAudioState.activeIncident
@@ -550,6 +591,153 @@ class MainActivity : ComponentActivity() {
                             },
                             onSignOut = { signOut() },
                             onResetAllData = { showResetDataDialog = true },
+                        )
+                    }
+
+                    beneficiaryHighRiskDialogIncident?.let { incident ->
+                        val primaryCaregiver = connectedCaregivers.firstOrNull { it.isPrimary } ?: connectedCaregivers.firstOrNull()
+                        var caregiverExpanded by remember { mutableStateOf(false) }
+                        var expandedChoiceId by remember { mutableStateOf(primaryCaregiver?.caregiverId) }
+                        val chosen = connectedCaregivers.firstOrNull { it.caregiverId == expandedChoiceId } ?: primaryCaregiver
+                        AlertDialog(
+                            onDismissRequest = { beneficiaryHighRiskDialogIncident = null },
+                            title = { Text("High-risk alert: ${incident.soundLabel}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.danger) },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Text("${incident.soundLabel} was just detected with ${(incident.confidence * 100).toInt()}% confidence. Are you okay?", style = MaterialTheme.typography.bodyMedium)
+                                    if (connectedCaregivers.size > 1) {
+                                        Text("Call caregiver:", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.ink700)
+                                        Box {
+                                            OutlinedButton(
+                                                onClick = { caregiverExpanded = true },
+                                                modifier = Modifier.fillMaxWidth(),
+                                                shape = RoundedCornerShape(12.dp),
+                                            ) { Text(chosen?.name ?: "Choose caregiver", fontWeight = FontWeight.SemiBold) }
+                                            DropdownMenu(expanded = caregiverExpanded, onDismissRequest = { caregiverExpanded = false }) {
+                                                connectedCaregivers.forEach { cg ->
+                                                    DropdownMenuItem(
+                                                        text = { Text("${cg.name}${if (cg.isPrimary) " (primary)" else ""}") },
+                                                        onClick = { expandedChoiceId = cg.caregiverId; caregiverExpanded = false },
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    } else if (primaryCaregiver != null) {
+                                        Text("Primary caregiver: ${primaryCaregiver.name}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                                    } else {
+                                        Text("No caregiver linked yet — ask someone to connect with your pairing code.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        beneficiaryHighRiskDialogIncident = null
+                                        AudioMonitoringService.respondToIncident(BeneficiaryResponse.Safe)
+                                    },
+                                ) { Text("I'm OK", fontWeight = FontWeight.Bold) }
+                            },
+                            dismissButton = {
+                                val canCall = chosen != null && chosen.phone.isNotBlank()
+                                Button(
+                                    onClick = {
+                                        beneficiaryHighRiskDialogIncident = null
+                                        if (canCall) callPhoneNumber(chosen!!.phone) else Toast.makeText(this@MainActivity, "No phone number available.", Toast.LENGTH_SHORT).show()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                                ) { Text(if (canCall) "Call ${chosen?.name ?: "caregiver"}" else "Call caregiver") }
+                            },
+                        )
+                    }
+
+                    caregiverHighRiskPopupNotification?.let { alert ->
+                        val beneficiaryName = monitoredBeneficiaries.firstOrNull { it.beneficiaryId == alert.beneficiaryId }?.name ?: "your beneficiary"
+                        AlertDialog(
+                            onDismissRequest = { caregiverHighRiskPopupNotification = null },
+                            title = { Text("High-risk alert — $beneficiaryName", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.danger) },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("${alert.soundLabel} detected at ${beneficiaryName}'s place · ${(alert.confidence * 100).toInt()}% confidence. We recommend requesting a verification photo — with the beneficiary's auto-approve on, it will open and capture automatically and appear in chat.", style = MaterialTheme.typography.bodyMedium)
+                                }
+                            },
+                            confirmButton = {
+                                Button(
+                                    onClick = {
+                                        val bId = alert.beneficiaryId
+                                        caregiverHighRiskPopupNotification = null
+                                        if (bId.isNotBlank()) {
+                                            val b = monitoredBeneficiaries.firstOrNull { it.beneficiaryId == bId }
+                                            selectedChatPartner = ChatPreview(
+                                                partnerId = bId,
+                                                partnerName = b?.name ?: beneficiaryName,
+                                                partnerPhone = b?.phone.orEmpty(),
+                                                lastMessage = "",
+                                                lastTimestamp = System.currentTimeMillis(),
+                                                unreadCount = 0,
+                                            )
+                                            val labelLower = alert.soundLabel.lowercase()
+                                            val trustLabel = when {
+                                                "explosion" in labelLower || "gunshot" in labelLower -> "Explosion / Gunshot"
+                                                else -> alert.soundLabel
+                                            }
+                                            val existingIncidents = incidentClientForPopup()
+                                            lifecycleScope.launch {
+                                                val incidentId = existingIncidents?.let {
+                                                    IncidentClient(this@MainActivity).fetchIncidentsForBeneficiary(bId).getOrNull()
+                                                        ?.maxByOrNull { row -> row.startedAt }?.id
+                                                }
+                                                val useIncidentId = incidentId ?: alert.incidentId
+                                                if (useIncidentId.isNotBlank()) {
+                                                    SnapshotClient(this@MainActivity).requestSnapshot(useIncidentId, bId)
+                                                        .onSuccess { req ->
+                                                            demoSnapshotRequest = req
+                                                            demoPhotoRequested = true
+                                                            demoPhotoDecision = req.approvalStatus
+                                                            demoPhotoRequestedAt = System.currentTimeMillis()
+                                                            demoPhotoDecisionAt = System.currentTimeMillis()
+                                                            demoSnapshotMessage = if (req.approvalStatus == "approved") {
+                                                                "High-risk: $trustLabel — photo request auto-approved. Beneficiary camera will open to capture and send to chat."
+                                                            } else {
+                                                                "Photo request sent for $trustLabel — waiting for beneficiary approval. It will appear in chat once captured."
+                                                            }
+                                                            loadChatMessages(bId)
+                                                            screen = AppScreen.Chat
+                                                            if (req.approvalStatus == "approved") {
+                                                            }
+                                                        }
+                                                        .onFailure { demoSnapshotMessage = "Photo request failed: ${it.message}" }
+                                                } else {
+                                                    demoSnapshotMessage = "Could not find incident for photo request. Open chat and use Request photo."
+                                                    loadChatMessages(bId)
+                                                    screen = AppScreen.Chat
+                                                }
+                                            }
+                                        }
+                                    },
+                                ) { Text("Request photo", fontWeight = FontWeight.Bold) }
+                            },
+                            dismissButton = {
+                                OutlinedButton(onClick = { caregiverHighRiskPopupNotification = null }) { Text("Dismiss") }
+                                TextButton(
+                                    onClick = {
+                                        val bId = alert.beneficiaryId
+                                        caregiverHighRiskPopupNotification = null
+                                        if (bId.isNotBlank()) {
+                                            val b = monitoredBeneficiaries.firstOrNull { it.beneficiaryId == bId }
+                                            selectedChatPartner = ChatPreview(
+                                                partnerId = bId,
+                                                partnerName = b?.name ?: beneficiaryName,
+                                                partnerPhone = b?.phone.orEmpty(),
+                                                lastMessage = "",
+                                                lastTimestamp = System.currentTimeMillis(),
+                                                unreadCount = 0,
+                                            )
+                                            loadChatMessages(bId)
+                                            screen = AppScreen.Chat
+                                        }
+                                    },
+                                ) { Text("Open chat") }
+                            },
                         )
                     }
 
@@ -906,13 +1094,7 @@ class MainActivity : ComponentActivity() {
                             ).onFailure { setupMessage = it.message ?: "Could not save monitoring consent." }
                         }
                         if (setupMessage == null) {
-                            if (role.equals("caregiver", ignoreCase = true)) {
-                                screen = AppScreen.CaregiverDashboard
-                                refreshCaregiverData()
-                            } else {
-                                screen = AppScreen.BeneficiaryDashboard
-                                refreshBeneficiaryData()
-                            }
+                            screen = AppScreen.Onboarding
                         }
                     }
                     .onFailure { setupMessage = it.message ?: "Could not save profile." }
@@ -1049,7 +1231,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Fire a device notification for each newly-queued HIGH severity caregiver alert. */
+    private fun incidentClientForPopup(): IncidentClient? = runCatching { IncidentClient(this) }.getOrNull()
+
+    /** Fire a device notification for each newly-queued HIGH severity caregiver alert, plus an in-app popup. */
     private fun checkForNewHighRiskAlerts(notifications: List<CaregiverNotification>) {
         val currentIds = notifications.map { it.id }.toSet()
         if (!notificationIdsInitialized) {
@@ -1057,10 +1241,15 @@ class MainActivity : ComponentActivity() {
             notificationIdsInitialized = true
             return
         }
+        val oneHourMs = 60L * 60 * 1000
         val fresh = notifications.filter {
-            it.id !in seenNotificationIds && it.severity.equals("high", ignoreCase = true)
+            if (it.id in seenNotificationIds) return@filter false
+            if (!it.severity.equals("high", ignoreCase = true)) return@filter false
+            val ts = parseIsoMillis(it.incidentStartedAt) ?: parseIsoMillis(it.createdAt) ?: return@filter false
+            System.currentTimeMillis() - ts <= oneHourMs
         }
         fresh.forEach { alert ->
+            caregiverHighRiskPopupNotification = alert
             val beneficiaryName = monitoredBeneficiaries
                 .firstOrNull { it.beneficiaryId == alert.beneficiaryId }?.name
                 ?: "your beneficiary"
@@ -1320,20 +1509,54 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun removeCaregiver(connectionId: String) {
+        if (connectionId.startsWith("dev_")) {
+            val removed = connectedCaregivers.firstOrNull { it.connectionId == connectionId }
+            connectedCaregivers = connectedCaregivers.filterNot { it.connectionId == connectionId }
+            if (removed != null) {
+                chatListPreviews = chatListPreviews.filterNot { it.partnerId == removed.caregiverId }
+                if (selectedChatPartner?.partnerId == removed.caregiverId) {
+                    chatMessages = emptyList()
+                    selectedChatPartner = null
+                }
+            }
+            Toast.makeText(this, "Test caregiver removed — chat deleted.", Toast.LENGTH_SHORT).show()
+            return
+        }
         dashboardLoading = true
         lifecycleScope.launch {
             careClient.removeCareConnection(connectionId)
-                .onSuccess { refreshBeneficiaryData() }
+                .onSuccess {
+                    chatListPreviews = chatListPreviews.filterNot { preview ->
+                        connectedCaregivers.firstOrNull { it.connectionId == connectionId }?.let { it.caregiverId == preview.partnerId } ?: false
+                    }
+                    refreshBeneficiaryData()
+                }
                 .onFailure { dashboardMessage = it.message }
             dashboardLoading = false
         }
     }
 
     private fun removeBeneficiary(connectionId: String) {
+        if (connectionId.startsWith("dev_")) {
+            val removed = monitoredBeneficiaries.firstOrNull { it.connectionId == connectionId }
+            monitoredBeneficiaries = monitoredBeneficiaries.filterNot { it.connectionId == connectionId }
+            if (removed != null) {
+                beneficiaryRiskSummaries = beneficiaryRiskSummaries - removed.beneficiaryId
+                chatListPreviews = chatListPreviews.filterNot { it.partnerId == removed.beneficiaryId }
+                if (selectedChatPartner?.partnerId == removed.beneficiaryId) {
+                    chatMessages = emptyList()
+                    selectedChatPartner = null
+                }
+            }
+            Toast.makeText(this, "Test beneficiary removed — chat deleted.", Toast.LENGTH_SHORT).show()
+            return
+        }
         dashboardLoading = true
         lifecycleScope.launch {
             careClient.removeCareConnection(connectionId)
-                .onSuccess { refreshCaregiverData() }
+                .onSuccess {
+                    refreshCaregiverData()
+                }
                 .onFailure { dashboardMessage = it.message }
             dashboardLoading = false
         }
@@ -1414,8 +1637,133 @@ class MainActivity : ComponentActivity() {
         demoSnapshotRequest = null
         demoSnapshotMessage = null
         autoApproveCameraRequests = false
+        cameraReady = false
+        getSharedPreferences("soundguard_settings", Context.MODE_PRIVATE)
+            .edit().remove("camera_ready").apply()
         chatMessages = emptyList()
         selectedChatPartner = null
+        beneficiaryHighRiskDialogIncident = null
+        caregiverHighRiskPopupNotification = null
+    }
+
+    private fun sendTestHighRiskNotificationForBeneficiary() {
+        val label = listOf("Glass Breaking", "Siren / Smoke Alarm", "Fire / Crackling", "Explosion / Gunshot").random()
+        val confidence = 0.92f
+        val incident = IncidentRecord(
+            id = java.util.UUID.randomUUID().toString(),
+            soundLabel = label,
+            severity = SoundSeverity.High,
+            confidence = confidence,
+            status = IncidentStatus.WaitingUser,
+            startedAt = System.currentTimeMillis(),
+            nextDeadlineAt = System.currentTimeMillis() + IncidentStateMachine.TWO_MINUTES_MS,
+        )
+        beneficiaryHighRiskDialogIncident = incident
+        AudioMonitoringService.simulateSound("emergency", label, confidence, true)
+        lifecycleScope.launch {
+            IncidentClient(this@MainActivity).createIncident(AlertEvent("emergency", label, confidence, SoundSeverity.High, System.currentTimeMillis()))
+                .onSuccess { refreshBeneficiaryData() }
+        }
+        val first = connectedCaregivers.firstOrNull()
+        val hint = if (first != null) "Recommended: request a verification photo — auto-approve will capture and send to chat." else "No caregiver linked yet."
+        Toast.makeText(this, "$label detected — high risk. $hint", Toast.LENGTH_LONG).show()
+        showHighRiskAlertNotification(
+            beneficiaryId = authClient.userId().orEmpty(),
+            beneficiaryName = fullName.ifBlank { "you" },
+            soundLabel = label,
+            confidence = confidence,
+        )
+    }
+
+    private fun sendTestHighRiskNotificationForCaregiver() {
+        val target = monitoredBeneficiaries.firstOrNull()
+        val label = listOf("Glass Breaking", "Siren / Smoke Alarm", "Explosion / Gunshot", "Fire / Crackling").random()
+        val nowIso = java.time.Instant.now().toString()
+        val fake = CaregiverNotification(
+            id = "dev_${System.currentTimeMillis()}",
+            incidentId = java.util.UUID.randomUUID().toString(),
+            beneficiaryId = target?.beneficiaryId.orEmpty(),
+            soundLabel = label,
+            severity = "high",
+            confidence = 0.91f,
+            status = "queued",
+            createdAt = nowIso,
+            incidentStartedAt = nowIso,
+        )
+        caregiverHighRiskPopupNotification = fake
+        showHighRiskAlertNotification(
+            beneficiaryId = fake.beneficiaryId,
+            beneficiaryName = target?.name ?: "beneficiary",
+            soundLabel = label,
+            confidence = fake.confidence,
+        )
+        Toast.makeText(this, "$label detected — test alert sent to you as caregiver.", Toast.LENGTH_LONG).show()
+        if (target != null) {
+            lifecycleScope.launch {
+                IncidentClient(this@MainActivity).createIncident(
+                    AlertEvent("emergency", label, 0.91f, SoundSeverity.High, System.currentTimeMillis()),
+                )
+                refreshCaregiverData()
+            }
+        }
+    }
+
+    private fun addFakeCaregiverLocal() {
+        devFakeCounter += 1
+        val idx = devFakeCounter
+        val fake = CaregiverMember(
+            connectionId = "dev_caregiver_$idx",
+            caregiverId = "dev_caregiver_id_$idx",
+            name = listOf("Ava", "Ben", "Clara", "Dan", "Eva", "Finn", "Grace", "Hana").shuffled().first() + " $idx",
+            phone = "+65 9000 ${1000 + idx}",
+            email = "caregiver$idx@example.com",
+            isPrimary = connectedCaregivers.isEmpty(),
+            escalationOrder = connectedCaregivers.size + 1,
+            status = "active",
+        )
+        connectedCaregivers = connectedCaregivers + fake
+        val incident = SharedIncident(
+            id = "dev_inc_cg_$idx",
+            label = listOf("Glass Breaking", "Siren / Smoke Alarm").random(),
+            severity = "high",
+            confidence = 0.88f,
+            status = "detected",
+            startedAt = java.time.Instant.now().toString(),
+        )
+        val devKey = "dev_chats_caregiver_ids"
+        getSharedPreferences("soundguard_settings", Context.MODE_PRIVATE).edit()
+            .putString(devKey, (getSharedPreferences("soundguard_settings", Context.MODE_PRIVATE).getString(devKey, "").orEmpty() + ",${fake.caregiverId}").trim(','))
+            .apply()
+        chatListPreviews = (chatListPreviews + ChatPreview(fake.caregiverId, fake.name, fake.phone, "${incident.label} • high", System.currentTimeMillis(), 1)).distinctBy { it.partnerId }
+        Toast.makeText(this, "Added ${fake.name}. Chat will be removed when you remove this caregiver.", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun addFakeBeneficiaryLocal() {
+        devFakeCounter += 1
+        val idx = devFakeCounter
+        val fake = MonitoredBeneficiary(
+            connectionId = "dev_beneficiary_$idx",
+            beneficiaryId = "dev_beneficiary_id_$idx",
+            name = listOf("James", "Maya", "Noah", "Liam", "Aisha", "Omar", "Zoe", "Iris").shuffled().first() + " $idx",
+            phone = "+65 9001 ${1000 + idx}",
+            email = "beneficiary$idx@example.com",
+            isPrimary = false,
+            status = "active",
+        )
+        monitoredBeneficiaries = monitoredBeneficiaries + fake
+        val label = listOf("Glass Breaking", "Explosion / Gunshot", "Siren / Smoke Alarm").random()
+        val incident = SharedIncident(
+            id = "dev_inc_bn_$idx",
+            label = label,
+            severity = "high",
+            confidence = 0.89f,
+            status = "waiting_user",
+            startedAt = java.time.Instant.now().toString(),
+            beneficiaryId = fake.beneficiaryId,
+        )
+        beneficiaryRiskSummaries = beneficiaryRiskSummaries + (fake.beneficiaryId to RiskSummary(RiskTier.High, label, System.currentTimeMillis()))
+        chatListPreviews = (chatListPreviews + ChatPreview(fake.beneficiaryId, fake.name, fake.phone, "$label • high", System.currentTimeMillis(), 1)).distinctBy { it.partnerId }
+        Toast.makeText(this, "Added ${fake.name}. Chat will be removed when you remove this beneficiary.", Toast.LENGTH_SHORT).show()
     }
 }
 
@@ -2060,6 +2408,135 @@ private fun TermsScreen(onBack: () -> Unit, onAccept: () -> Unit) {
 }
 
 @Composable
+private fun OnboardingScreen(
+    role: String?,
+    onConfirm: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = if (role.equals("caregiver", ignoreCase = true)) {
+                "Remind your beneficiary"
+            } else {
+                "Set up your device"
+            },
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = if (role.equals("caregiver", ignoreCase = true)) {
+                "Share these placement tips with your beneficiary so SoundGuard can monitor effectively."
+            } else {
+                "Follow these tips so SoundGuard can hear and see clearly around you."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.ink500,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(20.dp))
+
+        Image(
+            painter = painterResource(id = R.drawable.onboarding),
+            contentDescription = "Phone placement guide — front view and side view on a support stand",
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp)),
+            contentScale = ContentScale.FillWidth,
+        )
+
+        Spacer(Modifier.height(24.dp))
+
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            OnboardingTip(
+                icon = Icons.Outlined.PhoneAndroid,
+                title = "Keep the phone upright",
+                body = "Place the phone vertically on a stable surface — avoid laying it flat or face-down.",
+            )
+            OnboardingTip(
+                icon = Icons.Outlined.Settings,
+                title = "Use a phone stand",
+                body = "A stand keeps the mic and camera aimed at the room for the best coverage.",
+            )
+            OnboardingTip(
+                icon = Icons.Outlined.CameraAlt,
+                title = "Don't block the camera",
+                body = "Make sure the camera lens has a clear, unobstructed view of the surroundings.",
+            )
+            OnboardingTip(
+                icon = Icons.Outlined.Mic,
+                title = "Keep the mic uncovered",
+                body = "Avoid cases or objects covering the bottom of the phone where the microphone sits.",
+            )
+        }
+
+        Spacer(Modifier.weight(1f))
+
+        Button(
+            onClick = onConfirm,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(50.dp),
+            shape = RoundedCornerShape(999.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+            ),
+        ) {
+            Text("I've set it up", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun OnboardingTip(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    body: String,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .size(28.dp)
+                .padding(top = 2.dp),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = body,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.ink500,
+            )
+        }
+    }
+}
+
+@Composable
 private fun CameraTestScreen(onBack: () -> Unit, onFinished: (String?) -> Unit) {
     var capturedPath by remember { mutableStateOf<String?>(null) }
     Column(
@@ -2144,6 +2621,8 @@ private fun BeneficiaryDashboard(
     onLinkDemoCaregiver: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenLab: () -> Unit = {},
+    onTestHighRiskNotification: () -> Unit = {},
+    onAddFakeCaregiver: () -> Unit = {},
     onRefresh: () -> Unit,
     onOpenChatList: () -> Unit = {},
 ) {
@@ -2342,17 +2821,31 @@ private fun BeneficiaryDashboard(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 1.dp)
                         Spacer(Modifier.height(10.dp))
 
-                        // Alert Row — Single tappable row with severity shown once that taps through to details
-                        val lastAlertAgo = formatLastAlertAgo(riskSummary?.lastAlertAtMs)
-                        val alertText = when {
-                            riskSummary?.lastAlertLabel != null && lastAlertAgo != null ->
-                                "${riskSummary.lastAlertLabel} detected · $lastAlertAgo"
-                            riskSummary?.lastAlertLabel != null ->
-                                "${riskSummary.lastAlertLabel} detected"
-                            riskTier == RiskTier.Quiet ->
-                                "All quiet — no alerts in 24h"
-                            else -> "Live audio diagnostics"
+                        val isHighRiskLiveNow = audioState.isEmergency
+                        val showLive = audioState.isMonitoring && audioState.soundCategory != "background"
+                        val liveChipLabel = when {
+                            isHighRiskLiveNow -> "HIGH RISK"
+                            showLive -> "LIVE"
+                            else -> null
                         }
+                        val liveChipTone = when {
+                            isHighRiskLiveNow -> IncidentStatusTone.Danger
+                            showLive -> IncidentStatusTone.Success
+                            else -> null
+                        }
+                        val liveAlertText = when {
+                            isHighRiskLiveNow -> "${audioState.displayLabel} · ${(audioState.confidence * 100).toInt()}%"
+                            showLive -> "${audioState.displayLabel} · ${(audioState.confidence * 100).toInt()}%"
+                            riskTier == RiskTier.High && riskSummary?.lastAlertLabel != null -> {
+                                val ago = formatLastAlertAgo(riskSummary.lastAlertAtMs)
+                                if (ago != null) "${riskSummary.lastAlertLabel} detected · $ago" else "${riskSummary.lastAlertLabel} detected"
+                            }
+                            else -> "All quiet — no alerts in the last hour"
+                        }
+                        val effectiveChipLabel = liveChipLabel ?: riskTierChipLabel(riskTier)
+                        val effectiveChipTone = liveChipTone ?: riskTierTone(riskTier)
+                        val chipLabel = if (riskTier == RiskTier.Quiet && !isHighRiskLiveNow) riskTierChipLabel(RiskTier.Quiet) else effectiveChipLabel
+                        val chipTone = if (riskTier == RiskTier.Quiet && !isHighRiskLiveNow) riskTierTone(RiskTier.Quiet) else effectiveChipTone
 
                         Row(
                             modifier = Modifier
@@ -2369,14 +2862,14 @@ private fun BeneficiaryDashboard(
                                 modifier = Modifier.weight(1f),
                             ) {
                                 StatusChip(
-                                    label = riskTierChipLabel(riskTier),
-                                    tone = riskTierTone(riskTier),
+                                    label = chipLabel,
+                                    tone = chipTone,
                                 )
                                 Text(
-                                    text = alertText,
+                                    text = liveAlertText,
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.Medium,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    color = if (showLive && audioState.isEmergency) MaterialTheme.colorScheme.danger else MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -2542,6 +3035,14 @@ private fun BeneficiaryDashboard(
                         TestToolButton(
                             title = "Simulate smoke alarm",
                             onClick = { onSimulateSound("emergency", "Smoke alarm", 0.94f, true) },
+                        )
+                        TestToolButton(
+                            title = "Send test high-risk notification",
+                            onClick = onTestHighRiskNotification,
+                        )
+                        TestToolButton(
+                            title = "Add fake caregiver ( + chat)",
+                            onClick = onAddFakeCaregiver,
                         )
                     }
                 }
@@ -2997,6 +3498,8 @@ private fun CaregiverDashboard(
     onOpenSettings: () -> Unit,
     onRefresh: () -> Unit,
     onOpenChatList: () -> Unit = {},
+    onTestHighRiskNotification: () -> Unit = {},
+    onAddFakeBeneficiary: () -> Unit = {},
 ) {
     var codeInput by remember { mutableStateOf("") }
     var showPairingSheet by remember { mutableStateOf(false) }
@@ -3119,6 +3622,13 @@ private fun CaregiverDashboard(
                                 )
                             }
                         }
+                    }
+                }
+
+                CollapsibleSection(title = "Developer & test tools", initiallyExpanded = false) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TestToolButton(title = "Send test high-risk notification", onClick = onTestHighRiskNotification)
+                        TestToolButton(title = "Add fake beneficiary ( + chat)", onClick = onAddFakeBeneficiary)
                     }
                 }
 

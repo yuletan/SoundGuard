@@ -307,6 +307,24 @@ class AudioMonitoringService : Service() {
                     }
                     val nowMs = System.currentTimeMillis()
                     val snap = ProbeSnapshot(classification.displayLabel, classification.category, classification.confidence, classification.isEmergency, nowMs)
+                    val nextIncident = if (classification.isEmergency) {
+                        incidentEngine.detect(
+                            classification.displayLabel,
+                            classification.severity,
+                            classification.confidence,
+                            nowMs,
+                        ) ?: incidentEngine.advance(nowMs)
+                    } else {
+                        incidentEngine.advance(nowMs)
+                    }
+                    val keepIncident = _audioState.value.activeIncident
+                    val resolvedOrAck = nextIncident?.status in setOf(IncidentStatus.FalseAlarm, IncidentStatus.CaregiverAcknowledged, IncidentStatus.Resolved)
+                    val incidentForState = when {
+                        classification.isEmergency -> nextIncident
+                        keepIncident?.status == IncidentStatus.WaitingUser -> keepIncident
+                        resolvedOrAck == true -> null
+                        else -> nextIncident ?: keepIncident
+                    }
                     _audioState.value = _audioState.value.copy(
                         soundCategory = classification.category,
                         displayLabel = classification.displayLabel,
@@ -322,12 +340,7 @@ class AudioMonitoringService : Service() {
                         debugText = classification.debugText,
                         lastFrameAtMs = nowMs,
                         probeLog = (_audioState.value.probeLog + snap).takeLast(40),
-                        activeIncident = incidentEngine.detect(
-                            classification.displayLabel,
-                            classification.severity,
-                            classification.confidence,
-                            nowMs,
-                        ) ?: incidentEngine.advance(nowMs),
+                        activeIncident = incidentForState,
                         )
 
                     if (classification.isEmergency) {
