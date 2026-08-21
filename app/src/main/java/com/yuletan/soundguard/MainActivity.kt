@@ -513,6 +513,15 @@ class MainActivity : ComponentActivity() {
                                         showClearChatConfirm = true
                                     }
                                 },
+                                partnerDeactivated = selectedChatPartner?.deactivated == true,
+                                onRemoveConnection = {
+                                    val connId = selectedChatPartner?.connectionId
+                                    if (!connId.isNullOrEmpty()) {
+                                        requestRemoveConnection(connId)
+                                        screen = if (selectedRole.equals("caregiver", ignoreCase = true))
+                                            AppScreen.CaregiverDashboard else AppScreen.BeneficiaryDashboard
+                                    }
+                                },
                             )
                             if (snapshotUploading) {
                                 androidx.compose.material3.AlertDialog(
@@ -674,6 +683,8 @@ class MainActivity : ComponentActivity() {
                                                 lastMessage = "",
                                                 lastTimestamp = System.currentTimeMillis(),
                                                 unreadCount = 0,
+                                                connectionId = b?.connectionId.orEmpty(),
+                                                deactivated = b?.deactivated == true,
                                             )
                                             val labelLower = alert.soundLabel.lowercase()
                                             val trustLabel = when {
@@ -731,6 +742,8 @@ class MainActivity : ComponentActivity() {
                                                 lastMessage = "",
                                                 lastTimestamp = System.currentTimeMillis(),
                                                 unreadCount = 0,
+                                                connectionId = b?.connectionId.orEmpty(),
+                                                deactivated = b?.deactivated == true,
                                             )
                                             loadChatMessages(bId)
                                             screen = AppScreen.Chat
@@ -780,7 +793,7 @@ class MainActivity : ComponentActivity() {
                         AlertDialog(
                             onDismissRequest = { showResetDataDialog = false },
                             title = { Text("Delete all account data?", fontWeight = FontWeight.Bold) },
-                            text = { Text("This permanently deletes your connections, incidents, notifications, snapshots, device tokens, settings, and profile setup. You will return to role selection.") },
+                            text = { Text("This deactivates your account: your profile, device tokens, and settings are cleared. Your care connections and chat history are kept so the people you're linked to can still see the chat marked \"Deactivated\" and remove it. You will return to role selection.") },
                             confirmButton = {
                                 Button(
                                     onClick = { showResetDataDialog = false; resetAllAccountData() },
@@ -1331,7 +1344,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             if (isCaregiver) {
                 val local = monitoredBeneficiaries.map { b ->
-                    ChatPreview(b.beneficiaryId, b.name, b.phone, "", System.currentTimeMillis(), 0)
+                    ChatPreview(b.beneficiaryId, b.name, b.phone, "", System.currentTimeMillis(), 0, b.connectionId, b.deactivated)
                 }
                 if (local.size == 1 && chatListPreviews.isEmpty()) {
                     chatListPreviews = local
@@ -1349,7 +1362,7 @@ class MainActivity : ComponentActivity() {
                     }
             } else {
                 val local = connectedCaregivers.map { c ->
-                    ChatPreview(c.caregiverId, c.name, c.phone, "", System.currentTimeMillis(), 0)
+                    ChatPreview(c.caregiverId, c.name, c.phone, "", System.currentTimeMillis(), 0, c.connectionId, c.deactivated)
                 }
                 if (local.size == 1 && chatListPreviews.isEmpty()) {
                     chatListPreviews = local
@@ -3006,6 +3019,8 @@ private fun BeneficiaryDashboard(
                                                     lastMessage = "",
                                                     lastTimestamp = System.currentTimeMillis(),
                                                     unreadCount = 0,
+                                                    connectionId = caregiver.connectionId,
+                                                    deactivated = caregiver.deactivated,
                                                 )
                                             )
                                         },
@@ -3380,6 +3395,8 @@ private fun BeneficiaryCaregiverCarousel(
                         lastMessage = "",
                         lastTimestamp = System.currentTimeMillis(),
                         unreadCount = 0,
+                        connectionId = caregiver.connectionId,
+                        deactivated = caregiver.deactivated,
                     )
                 )
             },
@@ -3413,62 +3430,103 @@ private fun BeneficiaryCaregiverRow(
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpenChat)
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AvatarCircle(text = caregiver.name, sizeDp = 32)
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(18.dp))
+                .clickable(onClick = onOpenChat)
+                .padding(horizontal = 16.dp, vertical = 18.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            AvatarCircle(
+                text = caregiver.name,
+                sizeDp = 64,
+                backgroundColor = if (caregiver.deactivated) MaterialTheme.colorScheme.outline
+                else MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                text = caregiver.name,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(6.dp))
+            if (caregiver.deactivated) {
+                StatusChip(label = "DEACTIVATED", tone = IncidentStatusTone.Neutral)
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    text = caregiver.name,
-                    fontWeight = FontWeight.Bold,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    "This caregiver deactivated their account. Recommended: remove to clear the chat.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.ink500,
+                    textAlign = TextAlign.Center,
                 )
+            } else {
                 if (caregiver.isPrimary) {
                     StatusChip(label = "PRIMARY", tone = IncidentStatusTone.Neutral)
                 }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Tap to open chat",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.ink500,
+                    textAlign = TextAlign.Center,
+                )
             }
-            Text("Tap to open chat", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (caregiver.phone.isNotBlank()) {
-                IconButton(onClick = onCall, modifier = Modifier.size(30.dp)) {
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedButton(
+                    onClick = onCall,
+                    enabled = caregiver.phone.isNotBlank() && !caregiver.deactivated,
+                    modifier = Modifier.weight(1f).height(42.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.4.dp, MaterialTheme.colorScheme.outline),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+                ) {
                     Icon(
                         imageVector = Icons.Outlined.Call,
-                        contentDescription = "Call",
-                        tint = MaterialTheme.colorScheme.ink700,
+                        contentDescription = null,
                         modifier = Modifier.size(16.dp),
                     )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Call", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+                Button(
+                    onClick = onOpenChat,
+                    modifier = Modifier.weight(1f).height(42.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                    ),
+                ) {
+                    Text("Open chat", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                 }
             }
-            Box {
-                IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(30.dp)) {
-                    Icon(
-                        imageVector = Icons.Outlined.MoreVert,
-                        contentDescription = "Options",
-                        tint = MaterialTheme.colorScheme.ink700,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
-                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                    if (!caregiver.isPrimary) {
-                        DropdownMenuItem(
-                            text = { Text("Set as primary") },
-                            onClick = { menuExpanded = false; onSetPrimary() },
-                        )
-                    }
+        }
+
+        Box(modifier = Modifier.align(Alignment.TopEnd)) {
+            IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    imageVector = Icons.Outlined.MoreVert,
+                    contentDescription = "Options",
+                    tint = MaterialTheme.colorScheme.ink700,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                if (!caregiver.isPrimary && !caregiver.deactivated) {
                     DropdownMenuItem(
-                        text = { Text("Remove caregiver", color = MaterialTheme.colorScheme.error) },
-                        onClick = { menuExpanded = false; onRemove() },
+                        text = { Text("Set as primary") },
+                        onClick = { menuExpanded = false; onSetPrimary() },
                     )
                 }
+                DropdownMenuItem(
+                    text = { Text("Remove caregiver", color = MaterialTheme.colorScheme.error) },
+                    onClick = { menuExpanded = false; onRemove() },
+                )
             }
         }
     }
@@ -3757,6 +3815,8 @@ private fun CaregiverBeneficiaryCarousel(
                         lastMessage = "",
                         lastTimestamp = System.currentTimeMillis(),
                         unreadCount = 0,
+                        connectionId = beneficiary.connectionId,
+                        deactivated = beneficiary.deactivated,
                     )
                 )
             },
@@ -3791,13 +3851,15 @@ private fun MonitoredBeneficiaryCard(
     var menuExpanded by remember { mutableStateOf(false) }
     val tier = summary?.tier ?: RiskTier.Quiet
     val lastAlertAgo = formatLastAlertAgo(summary?.lastAlertAtMs)
+    val deactivated = beneficiary.deactivated
 
     Box(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(
-                    when (tier) {
+                    if (deactivated) MaterialTheme.colorScheme.surfaceVariant
+                    else when (tier) {
                         RiskTier.High -> MaterialTheme.colorScheme.dangerTint
                         RiskTier.Medium -> MaterialTheme.colorScheme.warningTint
                         RiskTier.Quiet -> MaterialTheme.colorScheme.surfaceVariant
@@ -3811,7 +3873,8 @@ private fun MonitoredBeneficiaryCard(
             AvatarCircle(
                 text = beneficiary.name,
                 sizeDp = 64,
-                backgroundColor = when (tier) {
+                backgroundColor = if (deactivated) MaterialTheme.colorScheme.outline
+                else when (tier) {
                     RiskTier.High -> MaterialTheme.colorScheme.danger
                     RiskTier.Medium -> MaterialTheme.colorScheme.warning
                     RiskTier.Quiet -> MaterialTheme.colorScheme.primary
@@ -3826,9 +3889,15 @@ private fun MonitoredBeneficiaryCard(
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(6.dp))
-            StatusChip(label = riskTierChipLabel(tier), tone = riskTierTone(tier))
+            if (deactivated) {
+                StatusChip(label = "DEACTIVATED", tone = IncidentStatusTone.Neutral)
+            } else {
+                StatusChip(label = riskTierChipLabel(tier), tone = riskTierTone(tier))
+            }
             Spacer(Modifier.height(6.dp))
-            val detailText = when {
+            val detailText = if (deactivated) {
+                "This beneficiary deactivated their account. Recommended: remove to clear the chat."
+            } else when {
                 tier == RiskTier.Quiet && summary?.lastAlertLabel != null ->
                     "Last alert: ${summary.lastAlertLabel}${lastAlertAgo?.let { " · $it" } ?: ""}"
                 tier != RiskTier.Quiet ->
@@ -3842,7 +3911,8 @@ private fun MonitoredBeneficiaryCard(
             Text(
                 text = detailText,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (tier == RiskTier.High) MaterialTheme.colorScheme.danger
+                color = if (deactivated) MaterialTheme.colorScheme.ink500
+                else if (tier == RiskTier.High) MaterialTheme.colorScheme.danger
                 else if (tier == RiskTier.Medium) MaterialTheme.colorScheme.warning
                 else MaterialTheme.colorScheme.ink500,
                 textAlign = TextAlign.Center,
@@ -3851,7 +3921,7 @@ private fun MonitoredBeneficiaryCard(
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(
                     onClick = onCall,
-                    enabled = beneficiary.phone.isNotBlank(),
+                    enabled = beneficiary.phone.isNotBlank() && !deactivated,
                     modifier = Modifier.weight(1f).height(42.dp),
                     shape = RoundedCornerShape(999.dp),
                     border = androidx.compose.foundation.BorderStroke(1.4.dp, MaterialTheme.colorScheme.outline),

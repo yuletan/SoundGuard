@@ -11,6 +11,8 @@ data class ChatPreview(
     val lastMessage: String,
     val lastTimestamp: Long,
     val unreadCount: Int,
+    val connectionId: String = "",
+    val deactivated: Boolean = false,
 )
 
 class ChatRepository(context: Context) {
@@ -181,6 +183,8 @@ class ChatRepository(context: Context) {
                         lastMessage = lastMsg,
                         lastTimestamp = ts,
                         unreadCount = unread,
+                        connectionId = beneficiary.connectionId,
+                        deactivated = beneficiary.deactivated,
                     )
                 )
             }
@@ -213,6 +217,8 @@ class ChatRepository(context: Context) {
                         lastMessage = lastMsg,
                         lastTimestamp = ts,
                         unreadCount = unread,
+                        connectionId = caregiver.connectionId,
+                        deactivated = caregiver.deactivated,
                     )
                 )
             }

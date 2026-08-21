@@ -233,11 +233,74 @@ class ProfileClient(context: Context) {
                 val responseCode = connection.responseCode
                 if (responseCode !in 200..299) {
                     val response = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    // Fallback: the RPC has historically 403'd when grants/schema-cache
+                    // are stale on the live DB. Deactivate via direct REST calls so the
+                    // account is still reset (keeps chat for the other side, per design).
+                    val direct = resetAllAccountDataDirect(token)
+                    if (direct) return@runCatching
                     error("Account reset failed with HTTP $responseCode: $response")
                 }
             } finally {
                 connection.disconnect()
             }
+        }
+    }
+
+    /**
+     * Best-effort deactivation via direct REST (used when the RPC is wedged).
+     * Deletes the caller's device tokens + settings, then nulls the profile so
+     * the other party sees a "Deactivated" account. Care connections + chat
+     * history are intentionally kept (removing the connection purges them later).
+     */
+    private suspend fun resetAllAccountDataDirect(token: String): Boolean {
+        val userId = authClient.userId() ?: return false
+        val base = BuildConfig.SUPABASE_URL.trimEnd('/')
+
+        // Best-effort deletes — a failure here is non-critical.
+        runCatching { executeDelete("$base/rest/v1/device_push_tokens?user_id=eq.$userId", token) }
+        runCatching { executeDelete("$base/rest/v1/beneficiary_settings?user_id=eq.$userId", token) }
+        runCatching { executeDelete("$base/rest/v1/caregiver_settings?user_id=eq.$userId", token) }
+
+        // The deactivation marker — this is the step that must succeed.
+        val body = JSONObject().apply {
+            put("role", JSONObject.NULL)
+            put("setup_completed_at", JSONObject.NULL)
+            put("full_name", JSONObject.NULL)
+            put("phone", JSONObject.NULL)
+        }
+        return runCatching {
+            val connection = (URL("$base/rest/v1/profiles?id=eq.$userId").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Prefer", "return=minimal")
+                setRequestProperty("X-HTTP-Method-Override", "PATCH")
+                doOutput = true
+            }
+            try {
+                connection.outputStream.use { it.write(body.toString().toByteArray()) }
+                connection.responseCode in 200..299
+            } finally {
+                connection.disconnect()
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun executeDelete(endpoint: String, token: String): Boolean {
+        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "DELETE"
+            connectTimeout = 15_000
+            readTimeout = 20_000
+            setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+            setRequestProperty("Authorization", "Bearer $token")
+        }
+        return try {
+            connection.responseCode in 200..299
+        } finally {
+            connection.disconnect()
         }
     }
 }

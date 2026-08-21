@@ -1,6 +1,6 @@
 # SoundGuard
 
-SoundGuard is an Android-first safety support application designed for people who may spend time alone. It continuously listens to environmental sounds using the device's microphone, classifies them in real-time with on-device machine learning, and connects a beneficiary to a network of caregivers who can respond when help may be needed.
+SoundGuard is an Android-first **AI safety companion** for people who may spend time alone. A deep-learning audio model (Google's YAMNet, running as TensorFlow Lite) executes **entirely on-device**, classifying live microphone audio in real time across 521 sound classes — raw audio never leaves the phone. When the model detects an emergency sound (smoke alarm, breaking glass, crying, explosion), an incident state machine escalates to a network of caregivers with server-side push delivery, in-app chat, and consent-first camera verification.
 
 > **Disclaimer:** SoundGuard is a hackathon prototype. It is not a medical device, certified emergency system, or replacement for emergency services such as 911/999/112. It is not intended for clinical or life-critical use.
 
@@ -60,6 +60,7 @@ Many people — elderly individuals, people living alone, those with medical con
 ### Notifications and Alerts
 
 - **Firebase Cloud Messaging** — Server-side notification triggers automatically create FCM data messages when incidents transition through the state machine.
+- **Server-side push dispatch** — A `send-push` Supabase Edge Function drains queued push notifications and delivers FCM messages directly (OAuth-signed FCM v1 API), so caregiver alerts arrive even when the caregiver's app is closed. A `pg_cron` backstop re-drains every 30 seconds.
 - **Foreground service notifications** — An ongoing low-importance notification shows that monitoring is active; high-importance heads-up notifications appear for emergency alerts.
 - **Device token management** — FCM tokens are registered in Supabase on app start and on token refresh, ensuring notifications reach the correct device.
 
@@ -143,7 +144,8 @@ Android App (Kotlin + Compose)
     ├── Row Level Security (access control per table)
     ├── RPCs (create_pairing_code, accept_pairing_code, reset_my_account_data, etc.)
     ├── Storage (camera-snapshots bucket, private)
-    └── pg_cron (snapshot expiration)
+    ├── Edge Functions (send-push: FCM v1 dispatch for queued alerts)
+    └── pg_cron (snapshot expiration + push drain backstop)
 ```
 
 ---

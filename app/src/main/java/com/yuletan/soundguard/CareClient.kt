@@ -18,6 +18,7 @@ data class CaregiverMember(
     val isPrimary: Boolean,
     val escalationOrder: Int,
     val status: String,
+    val deactivated: Boolean = false,
 )
 
 data class MonitoredBeneficiary(
@@ -28,6 +29,7 @@ data class MonitoredBeneficiary(
     val email: String,
     val isPrimary: Boolean,
     val status: String,
+    val deactivated: Boolean = false,
 )
 
 class CareClient(context: Context) {
@@ -158,14 +160,13 @@ class CareClient(context: Context) {
                     CaregiverMember(
                         connectionId = conn.getString("id"),
                         caregiverId = cId,
-                        name = profile?.optString("full_name")?.ifBlank { null }
-                            ?: profile?.optString("email")
-                            ?: "Caregiver",
-                        phone = profile?.optString("phone").orEmpty(),
-                        email = profile?.optString("email").orEmpty(),
+                        name = cleanOpt(profile, "full_name").ifBlank { cleanOpt(profile, "email") }.ifBlank { "Caregiver" },
+                        phone = cleanOpt(profile, "phone"),
+                        email = cleanOpt(profile, "email"),
                         isPrimary = conn.optBoolean("is_primary", false),
                         escalationOrder = conn.optInt("escalation_order", i + 1),
                         status = conn.optString("status", "active"),
+                        deactivated = isDeactivated(profile),
                     )
                 )
             }
@@ -200,13 +201,12 @@ class CareClient(context: Context) {
                     MonitoredBeneficiary(
                         connectionId = conn.getString("id"),
                         beneficiaryId = bId,
-                        name = profile?.optString("full_name")?.ifBlank { null }
-                            ?: profile?.optString("email")
-                            ?: "Beneficiary",
-                        phone = profile?.optString("phone").orEmpty(),
-                        email = profile?.optString("email").orEmpty(),
+                        name = cleanOpt(profile, "full_name").ifBlank { cleanOpt(profile, "email") }.ifBlank { "Beneficiary" },
+                        phone = cleanOpt(profile, "phone"),
+                        email = cleanOpt(profile, "email"),
                         isPrimary = conn.optBoolean("is_primary", false),
                         status = conn.optString("status", "active"),
+                        deactivated = isDeactivated(profile),
                     )
                 )
             }
@@ -310,11 +310,23 @@ class CareClient(context: Context) {
         }
     }
 
+    /** A connected account is "deactivated" when reset cleared its role. */
+    private fun isDeactivated(profile: JSONObject?): Boolean {
+        val role = profile?.optString("role", "") ?: ""
+        return role.isBlank() || role.equals("null", ignoreCase = true)
+    }
+
+    /** Reads a profile field, treating JSON null / "null" / blank as empty. */
+    private fun cleanOpt(profile: JSONObject?, key: String): String {
+        val v = profile?.optString(key) ?: return ""
+        return if (v.isBlank() || v.equals("null", ignoreCase = true)) "" else v
+    }
+
     private fun fetchProfilesByIds(ids: List<String>, token: String): Map<String, JSONObject> {
         if (ids.isEmpty()) return emptyMap()
         val inFilter = "in.(" + ids.joinToString(",") + ")"
         val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
-            "/rest/v1/profiles?id=$inFilter&select=id,full_name,email,phone"
+            "/rest/v1/profiles?id=$inFilter&select=id,full_name,email,phone,role"
         val response = executeGet(endpoint, token)
         val array = JSONArray(response)
         val map = mutableMapOf<String, JSONObject>()

@@ -41,7 +41,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -81,6 +83,8 @@ fun ChatScreen(
     onBack: () -> Unit,
     onRefresh: () -> Unit,
     onClearChat: (() -> Unit)? = null,
+    partnerDeactivated: Boolean = false,
+    onRemoveConnection: (() -> Unit)? = null,
 ) {
     var showPhotoDetail by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
@@ -135,6 +139,21 @@ fun ChatScreen(
                 )
             }
 
+            if (partnerDeactivated) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.errorContainer,
+                ) {
+                    Text(
+                        text = "Deactivated",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+            }
+
             if (isCaregiverView) {
                 IconButton(onClick = onRequestPhoto, modifier = Modifier.size(36.dp)) {
                     Icon(Icons.Outlined.CameraAlt, contentDescription = "Request photo", tint = MaterialTheme.colorScheme.ink700)
@@ -156,6 +175,33 @@ fun ChatScreen(
         if (activeIncidentBannerText != null) {
             Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                 IncidentBanner(text = activeIncidentBannerText)
+            }
+        }
+
+        // --- DEACTIVATED PARTNER BANNER ---
+        if (partnerDeactivated && onRemoveConnection != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                    .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "This account has been deactivated.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onRemoveConnection) {
+                    Text(
+                        text = "Remove",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         }
 
