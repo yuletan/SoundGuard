@@ -215,6 +215,51 @@ class CareClient(context: Context) {
     }
 
     suspend fun removeCareConnection(connectionId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val viaRpc = removeCareConnectionViaRpc(connectionId)
+        if (viaRpc.isSuccess) return@withContext viaRpc
+        // Fallback: direct REST delete (RLS policy path).
+        val viaDirect = removeCareConnectionDirect(connectionId)
+        if (viaDirect.isSuccess) return@withContext viaDirect
+        Result.failure(
+            IllegalStateException(
+                "Remove failed — RPC (${viaRpc.exceptionOrNull()?.message}); " +
+                    "direct delete (${viaDirect.exceptionOrNull()?.message})",
+            ),
+        )
+    }
+
+    /** Preferred path: SECURITY DEFINER RPC (migration 037) bypasses RLS drift. */
+    private suspend fun removeCareConnectionViaRpc(connectionId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val token = authClient.getToken()
+            val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
+                "/rest/v1/rpc/remove_care_connection"
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 15_000
+                readTimeout = 20_000
+                setRequestProperty("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                setRequestProperty("Authorization", "Bearer $token")
+                setRequestProperty("Content-Type", "application/json")
+                doOutput = true
+            }
+            try {
+                connection.outputStream.use {
+                    it.write(JSONObject().put("p_connection_id", connectionId).toString().toByteArray())
+                }
+                val code = connection.responseCode
+                if (code !in 200..299) {
+                    val err = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    error("HTTP $code: ${err.take(300)}")
+                }
+            } finally {
+                connection.disconnect()
+            }
+        }
+    }
+
+    /** Legacy path: direct DELETE, relies on the RLS delete policy. */
+    private suspend fun removeCareConnectionDirect(connectionId: String): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             val token = authClient.getToken()
             val endpoint = BuildConfig.SUPABASE_URL.trimEnd('/') +
@@ -230,7 +275,7 @@ class CareClient(context: Context) {
                 val code = connection.responseCode
                 if (code !in 200..299) {
                     val err = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
-                    error("Remove failed (HTTP $code): $err")
+                    error("HTTP $code: ${err.take(300)}")
                 }
             } finally {
                 connection.disconnect()

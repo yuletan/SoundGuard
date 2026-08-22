@@ -40,6 +40,7 @@ private data class CategoryRule(
     val severity: SoundSeverity,
     val isEmergency: Boolean,
     val indices: Set<Int>,
+    val weight: Float = 1f,
 )
 
 private fun idx(vararg ranges: IntRange): Set<Int> {
@@ -141,7 +142,7 @@ class SoundClassifier(private val context: Context) {
             CategoryRule("wind", "Wind", SoundSeverity.None, false, idx(277..279)),
             CategoryRule("thunder", "Thunder", SoundSeverity.Medium, false, idx(280..281)),
             CategoryRule("water", "Water Sound", SoundSeverity.Low, false, idx(282..289)),
-            CategoryRule("fire", "Fire / Crackling", SoundSeverity.High, true, idx(290..293)),
+            CategoryRule("fire", "Fire / Crackling", SoundSeverity.High, true, idx(290..293), weight = 1.5f),
             CategoryRule("vehicle", "Vehicle", SoundSeverity.None, false, idx(294..315, 335..347)),
             CategoryRule("emergency_vehicle", "Emergency Vehicle Siren", SoundSeverity.High, true, idx(316..319)),
             CategoryRule("train", "Train", SoundSeverity.None, false, idx(322..328)),
@@ -152,7 +153,7 @@ class SoundClassifier(private val context: Context) {
             CategoryRule("siren_smoke", "Siren / Smoke Alarm", SoundSeverity.High, true, idx(390..396)),
             CategoryRule("mechanism", "Mechanical Sound", SoundSeverity.None, false, idx(397..411)),
             CategoryRule("construction", "Tool / Construction", SoundSeverity.None, false, idx(412..419)),
-            CategoryRule("explosion_gunshot", "Explosion / Gunshot", SoundSeverity.High, true, idx(420..430)),
+            CategoryRule("explosion_gunshot", "Loud Impact / Boom", SoundSeverity.Medium, false, idx(420..430)),
             CategoryRule("wood", "Wood Sound", SoundSeverity.None, false, idx(431..434)),
             CategoryRule("glass_break", "Glass Breaking", SoundSeverity.High, true, idx(435..437)),
             CategoryRule("liquid", "Liquid Sound", SoundSeverity.None, false, idx(438..449)),
@@ -167,7 +168,6 @@ class SoundClassifier(private val context: Context) {
             "siren_smoke",
             "emergency_vehicle",
             "glass_break",
-            "explosion_gunshot",
             "fire",
             "object_impact",
         )
@@ -188,20 +188,19 @@ class SoundClassifier(private val context: Context) {
                 "alarm_telephone",
                 "siren_smoke",
                 "emergency_vehicle",
-                "explosion_gunshot",
-                "fire" -> 0.50f
+                "explosion_gunshot" -> 0.40f
+                "fire" -> 0.30f
                 else -> 0.35f
             }
         }
 
         fun emergencyThresholdFor(category: String): Float {
             return when (category) {
-                "crying" -> 0.40f
-                "siren_smoke" -> 0.65f
-                "emergency_vehicle" -> 0.70f
+                "crying" -> 0.30f
+                "siren_smoke" -> 0.45f
+                "emergency_vehicle" -> 0.45f
                 "glass_break" -> 0.40f
-                "explosion_gunshot" -> 0.60f
-                "fire" -> 0.50f
+                "fire" -> 0.20f
                 else -> Float.MAX_VALUE
             }
         }
@@ -219,7 +218,7 @@ class SoundClassifier(private val context: Context) {
     private var isModelLoaded = false
     val smoother = SoundSmoother(windowSize = 3)
     val hysteresis = HysteresisSwitcher()
-    val emergencyGate = EmergencyGate(requiredFrames = 2)
+    val emergencyGate = EmergencyGate(requiredFrames = 1)
 
     init {
         loadModel()
@@ -332,7 +331,7 @@ class SoundClassifier(private val context: Context) {
 
             // Prefer a recognized safety sound over a louder background category.
             // This matters when a real event is quiet or far from the microphone.
-            val topEmergency = smoothed.firstOrNull { it.isEmergency && it.score >= 0.30f }
+            val topEmergency = smoothed.firstOrNull { it.isEmergency && it.score >= 0.20f }
 
             val displayCategory: CategoryScore
             val stableCategory: String
@@ -388,11 +387,12 @@ class SoundClassifier(private val context: Context) {
                 if (index in scores.indices) scores[index] else null
             }.sortedDescending()
 
-            val score = when {
+            val base = when {
                 classScores.isEmpty() -> 0f
                 rule.isEmergency -> classScores.take(2).sum().coerceAtMost(1f)
                 else -> classScores.take(3).sum().coerceAtMost(1f)
             }
+            val score = (base * rule.weight).coerceAtMost(1f)
 
             CategoryScore(
                 category = rule.category,

@@ -50,6 +50,27 @@ class IncidentStateMachineTest {
     }
 
     @Test
+    fun newHighRiskSoundSupersedesStaleEscalatedIncident() {
+        val machine = IncidentStateMachine()
+        machine.setCaregiverCount(0)
+        machine.detect("Fire / Crackling", SoundSeverity.High, 0.8f, 0L)
+        machine.advance(IncidentStateMachine.TWO_MINUTES_MS)
+        assertEquals(IncidentStatus.Escalated, machine.activeIncident()?.status)
+
+        val next = machine.detect(
+            "Smoke alarm",
+            SoundSeverity.High,
+            0.9f,
+            IncidentStateMachine.TWO_MINUTES_MS + 1_000L,
+        )
+
+        assertNotNull(next)
+        assertEquals(IncidentStatus.WaitingUser, next?.status)
+        assertEquals("Smoke alarm", machine.activeIncident()?.soundLabel)
+        assertEquals(1, machine.history().size)
+    }
+
+    @Test
     fun lowSeverityAlertDoesNotStartResponseWindow() {
         val machine = IncidentStateMachine()
 

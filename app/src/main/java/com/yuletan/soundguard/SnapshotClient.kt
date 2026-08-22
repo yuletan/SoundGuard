@@ -165,7 +165,9 @@ class SnapshotClient(context: Context) {
         runCatching {
             val token = requireToken()
             val beneficiaryId = authClient.userId() ?: error("No authenticated user was found.")
-            val endpoint = "${restUrl("camera_snapshots")}?beneficiary_id=eq.$beneficiaryId&approval_status=eq.approved&status=eq.requested&select=id,incident_id,requested_by,requested_at&order=requested_at.desc&limit=1"
+            // Ignore stale requests: only auto-open the camera for requests made in the last 24h.
+            val cutoff = java.time.Instant.now().minus(java.time.Duration.ofHours(24)).toString()
+            val endpoint = "${restUrl("camera_snapshots")}?beneficiary_id=eq.$beneficiaryId&approval_status=eq.approved&status=eq.requested&requested_at=gte.$cutoff&select=id,incident_id,requested_by,requested_at&order=requested_at.desc&limit=1"
             val response = requestJson("GET", endpoint, token, JSONObject(), null)
             val row = org.json.JSONArray(response).optJSONObject(0) ?: return@runCatching null
             PendingSnapshotRequest(
@@ -181,7 +183,9 @@ class SnapshotClient(context: Context) {
         runCatching {
             val token = requireToken()
             val beneficiaryId = authClient.userId() ?: error("No authenticated user was found.")
-            val endpoint = "${restUrl("camera_snapshots")}?beneficiary_id=eq.$beneficiaryId&approval_status=eq.pending&status=eq.requested&select=id,incident_id,requested_by,requested_at&order=requested_at.desc&limit=1"
+            // Approval popup expires after 1 hour — older pending requests are ignored.
+            val cutoff = java.time.Instant.now().minus(java.time.Duration.ofHours(1)).toString()
+            val endpoint = "${restUrl("camera_snapshots")}?beneficiary_id=eq.$beneficiaryId&approval_status=eq.pending&status=eq.requested&requested_at=gte.$cutoff&select=id,incident_id,requested_by,requested_at&order=requested_at.desc&limit=1"
             val response = requestJson("GET", endpoint, token, JSONObject(), null)
             val row = org.json.JSONArray(response).optJSONObject(0) ?: return@runCatching null
             PendingSnapshotRequest(

@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ArrowBack
@@ -59,7 +60,6 @@ import androidx.compose.material.icons.outlined.PhoneAndroid
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Security
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -171,6 +171,7 @@ class MainActivity : ComponentActivity() {
     private var snapshotUploading by mutableStateOf(false)
     private var loadedSessionUserId: String? = null
     private var showResetDataDialog by mutableStateOf(false)
+    private var resetErrorText by mutableStateOf<String?>(null)
 
     // Chat State
     private var chatMessages by mutableStateOf<List<ChatMessage>>(emptyList())
@@ -189,6 +190,7 @@ class MainActivity : ComponentActivity() {
 
     // Role Switch Dialog States
     private var showBlockedSwitchDialog by mutableStateOf(false)
+    private var showForceRemoveInstructionsDialog by mutableStateOf(false)
     private var blockedActiveConnectionsCount by mutableStateOf(0)
     private var blockedConnections by mutableStateOf<List<CareClient.RawConnection>>(emptyList())
     private var showConfirmSwitchDialog by mutableStateOf(false)
@@ -226,13 +228,18 @@ class MainActivity : ComponentActivity() {
 
         checkPermissionsState()
 
-        // Periodically check for pending and auto-approved snapshot requests (beneficiary only)
+        // Periodically check for pending and auto-approved snapshot requests (beneficiary only).
+        // Gated to post-setup screens so onboarding/setup can never be hijacked by the camera.
         lifecycleScope.launch {
             while (true) {
                 kotlinx.coroutines.delay(10_000L)
                 if (selectedRole.equals("beneficiary", ignoreCase = true)) {
+                    val onPostSetupScreen = screen == AppScreen.BeneficiaryDashboard ||
+                        screen == AppScreen.Chat ||
+                        screen == AppScreen.ChatList
+                    if (!onPostSetupScreen) continue
                     val client = SnapshotClient(this@MainActivity)
-                    if (screen != AppScreen.CameraTest && pendingSnapshotRequest == null && demoSnapshotRequest == null) {
+                    if (pendingSnapshotRequest == null && demoSnapshotRequest == null) {
                         val approved = client.fetchApprovedSnapshotForBeneficiary().getOrNull()
                         if (approved != null) {
                             pendingSnapshotRequest = null
@@ -793,7 +800,7 @@ class MainActivity : ComponentActivity() {
                         AlertDialog(
                             onDismissRequest = { showResetDataDialog = false },
                             title = { Text("Delete all account data?", fontWeight = FontWeight.Bold) },
-                            text = { Text("This deactivates your account: your profile, device tokens, and settings are cleared. Your care connections and chat history are kept so the people you're linked to can still see the chat marked \"Deactivated\" and remove it. You will return to role selection.") },
+                            text = { Text("This deactivates your account: your profile, device tokens, and settings are cleared. Your care connections are removed and shared chats are deleted for both sides. You will return to role selection.") },
                             confirmButton = {
                                 Button(
                                     onClick = { showResetDataDialog = false; resetAllAccountData() },
@@ -803,6 +810,32 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             dismissButton = { TextButton(onClick = { showResetDataDialog = false }) { Text("Cancel") } },
+                        )
+                    }
+
+                    resetErrorText?.let { err ->
+                        AlertDialog(
+                            onDismissRequest = { resetErrorText = null },
+                            title = { Text("Delete account data failed", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    SelectionContainer { Text(err) }
+                                    Text(
+                                        "Tap Copy and send this text to support.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.ink500,
+                                    )
+                                }
+                            },
+                            confirmButton = {
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = {
+                                        copyToClipboard(err)
+                                        Toast.makeText(this@MainActivity, "Error copied", Toast.LENGTH_SHORT).show()
+                                    }) { Text("Copy") }
+                                    Button(onClick = { resetErrorText = null }) { Text("OK") }
+                                }
+                            },
                         )
                     }
 
@@ -818,7 +851,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                     if (blockedConnections.isNotEmpty()) {
                                         Text(
-                                            "Stuck? Your dashboard says \"no caregivers linked\" because you are viewing the wrong role's list, or RLS hid profiles — but the server still has $blockedActiveConnectionsCount active connection(s). Use \"Force remove all\" below to clear them.",
+                                            "Tap \"View removal steps\" to see how to clear them.",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.ink500,
                                         )
@@ -834,27 +867,31 @@ class MainActivity : ComponentActivity() {
                                 {
                                     TextButton(
                                         onClick = {
-                                            val ids = blockedConnections.map { it.id }
                                             showBlockedSwitchDialog = false
-                                            lifecycleScope.launch {
-                                                var lastErr: String? = null
-                                                for (id in ids) {
-                                                    careClient.removeCareConnection(id)
-                                                        .onFailure { lastErr = it.message }
-                                                }
-                                                careClient.fetchAllMyActiveConnectionIds()
-                                                    .onSuccess { remaining -> blockedConnections = remaining }
-                                                if (lastErr != null) {
-                                                    Toast.makeText(this@MainActivity, lastErr, Toast.LENGTH_LONG).show()
-                                                } else {
-                                                    Toast.makeText(this@MainActivity, "Connections cleared. You can now switch your role.", Toast.LENGTH_SHORT).show()
-                                                    refreshBeneficiaryData(); refreshCaregiverData()
-                                                }
-                                            }
+                                            showForceRemoveInstructionsDialog = true
                                         }
-                                    ) { Text("Force remove all") }
+                                    ) { Text("View removal steps") }
                                 }
                             } else null,
+                        )
+                    }
+
+                    if (showForceRemoveInstructionsDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showForceRemoveInstructionsDialog = false },
+                            title = { Text("Remove connections one by one", fontWeight = FontWeight.Bold) },
+                            text = {
+                                Text(
+                                    "You still have $blockedActiveConnectionsCount active connection(s). " +
+                                        "Open your dashboard and remove each caregiver/beneficiary individually via the \u22ee menu \u2192 \"Remove\". " +
+                                        "Role switching unlocks only when none are left — then tap \"Switch mode\" again.",
+                                )
+                            },
+                            confirmButton = {
+                                Button(onClick = { showForceRemoveInstructionsDialog = false }) {
+                                    Text("OK")
+                                }
+                            },
                         )
                     }
 
@@ -987,18 +1024,22 @@ class MainActivity : ComponentActivity() {
                                 ?.replaceFirstChar { it.uppercase() }
                         }
 
-                        if (profile.setupCompletedAt != null) {
-                            if (profile.role.equals("caregiver", ignoreCase = true)) {
+                        when {
+                            // Brand-new account or deliberate reset (deactivated / role
+                            // cleared): choose a role first, then walk full setup.
+                            profile.deactivatedAt != null || profile.role.isBlank() -> screen = AppScreen.RoleSelection
+                            // Role already known but details/setup incomplete: skip the
+                            // redundant role pick and go straight to setup.
+                            profile.setupCompletedAt == null || profile.fullName.isBlank() || profile.phone.isBlank() ->
+                                screen = AppScreen.Setup
+                            profile.role.equals("caregiver", ignoreCase = true) -> {
                                 screen = AppScreen.CaregiverDashboard
                                 refreshCaregiverData()
-                            } else {
+                            }
+                            else -> {
                                 screen = AppScreen.BeneficiaryDashboard
                                 refreshBeneficiaryData()
                             }
-                        } else if (profile.role.isNotBlank()) {
-                            screen = AppScreen.Setup
-                        } else {
-                            screen = AppScreen.RoleSelection
                         }
                     } else {
                         screen = AppScreen.RoleSelection
@@ -1159,8 +1200,12 @@ class MainActivity : ComponentActivity() {
                     Toast.makeText(this@MainActivity, "Role reset. Please select your new role.", Toast.LENGTH_SHORT).show()
                 }
                 .onFailure {
-                    selectedRole = null
-                    screen = AppScreen.RoleSelection
+                    // Stay on the current dashboard and tell the user why the switch failed.
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Could not switch role: ${it.message}",
+                        Toast.LENGTH_LONG,
+                    ).show()
                 }
         }
     }
@@ -1617,7 +1662,10 @@ class MainActivity : ComponentActivity() {
                     screen = AppScreen.RoleSelection
                     Toast.makeText(this@MainActivity, "All account data deleted. Choose your role again.", Toast.LENGTH_LONG).show()
                 }
-                .onFailure { Toast.makeText(this@MainActivity, "Could not delete account data: ${it.message}", Toast.LENGTH_LONG).show() }
+                .onFailure {
+                    // Full, copyable detail — the toast truncated the fallback error.
+                    resetErrorText = it.message ?: "Unknown error."
+                }
         }
     }
 
@@ -1834,7 +1882,7 @@ private fun TopBarHeader(
             modifier = Modifier.size(34.dp)
         ) {
             Icon(
-                imageVector = Icons.Outlined.Tune,
+                imageVector = Icons.Outlined.Settings,
                 contentDescription = "Settings",
                 tint = MaterialTheme.colorScheme.ink700,
                 modifier = Modifier.size(20.dp),
@@ -2176,12 +2224,20 @@ private fun SetupScreen(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp),
                 )
+                val phoneValid = Validation.isPhoneValid(phone)
                 Text(
-                    text = if (Validation.isPhoneValid(phone)) "✓ Valid international phone number"
-                    else "Format: +65 81234567, +1 5551234567",
+                    text = when {
+                        phoneValid -> "✓ Valid international phone number"
+                        phone.isBlank() -> "Format: +65 81234567, +1 5551234567"
+                        else -> "✗ Not a valid number — use format +65 81234567"
+                    },
                     modifier = Modifier.padding(top = 4.dp),
                     style = MaterialTheme.typography.labelSmall,
-                    color = if (Validation.isPhoneValid(phone)) MaterialTheme.colorScheme.success else MaterialTheme.colorScheme.ink500,
+                    color = when {
+                        phoneValid -> MaterialTheme.colorScheme.success
+                        phone.isBlank() -> MaterialTheme.colorScheme.ink500
+                        else -> MaterialTheme.colorScheme.error
+                    },
                 )
             }
         }
@@ -2325,12 +2381,12 @@ private fun SetupScreen(
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             ),
         ) {
-            Text("Complete Setup & Open Dashboard", fontWeight = FontWeight.Bold)
+            Text("Complete Setup", fontWeight = FontWeight.Bold)
         }
 
         setupMessage?.let {
             Spacer(Modifier.height(12.dp))
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+            CopyableErrorText(it)
         }
     }
 }
@@ -2428,13 +2484,11 @@ private fun OnboardingScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(20.dp)
+            .padding(horizontal = 20.dp, vertical = 12.dp)
             .statusBarsPadding()
-            .navigationBarsPadding()
-            .verticalScroll(rememberScrollState()),
+            .navigationBarsPadding(),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Spacer(Modifier.height(12.dp))
         Text(
             text = if (role.equals("caregiver", ignoreCase = true)) {
                 "Remind your beneficiary"
@@ -2445,63 +2499,64 @@ private fun OnboardingScreen(
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(4.dp))
         Text(
             text = if (role.equals("caregiver", ignoreCase = true)) {
-                "Share these placement tips with your beneficiary so SoundGuard can monitor effectively."
+                "Share these placement tips with your beneficiary."
             } else {
-                "Follow these tips so SoundGuard can hear and see clearly around you."
+                "Follow these tips so SoundGuard can hear and see clearly."
             },
-            style = MaterialTheme.typography.bodyMedium,
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.ink500,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(10.dp))
 
         Image(
             painter = painterResource(id = R.drawable.onboarding),
             contentDescription = "Phone placement guide — front view and side view on a support stand",
             modifier = Modifier
                 .fillMaxWidth()
+                .weight(1f)
                 .clip(RoundedCornerShape(16.dp)),
-            contentScale = ContentScale.FillWidth,
+            contentScale = ContentScale.Fit,
         )
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(12.dp))
 
         Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             OnboardingTip(
                 icon = Icons.Outlined.PhoneAndroid,
                 title = "Keep the phone upright",
-                body = "Place the phone vertically on a stable surface — avoid laying it flat or face-down.",
+                body = "Upright on a stable surface — never flat or face-down.",
             )
             OnboardingTip(
                 icon = Icons.Outlined.Settings,
                 title = "Use a phone stand",
-                body = "A stand keeps the mic and camera aimed at the room for the best coverage.",
+                body = "Keeps the mic and camera aimed at the room.",
             )
             OnboardingTip(
                 icon = Icons.Outlined.CameraAlt,
                 title = "Don't block the camera",
-                body = "Make sure the camera lens has a clear, unobstructed view of the surroundings.",
+                body = "Lens needs a clear view of the surroundings.",
             )
             OnboardingTip(
                 icon = Icons.Outlined.Mic,
                 title = "Keep the mic uncovered",
-                body = "Avoid cases or objects covering the bottom of the phone where the microphone sits.",
+                body = "Nothing covering the bottom edge of the phone.",
             )
         }
 
-        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(14.dp))
 
         Button(
             onClick = onConfirm,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(50.dp),
+                .height(48.dp),
             shape = RoundedCornerShape(999.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.primary,
@@ -2510,7 +2565,32 @@ private fun OnboardingScreen(
         ) {
             Text("I've set it up", fontWeight = FontWeight.Bold, fontSize = 15.sp)
         }
-        Spacer(Modifier.height(8.dp))
+    }
+}
+
+/** Error text that can be long-pressed to select, with a one-tap Copy button. */
+@Composable
+private fun CopyableErrorText(text: String) {
+    val context = LocalContext.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        SelectionContainer(modifier = Modifier.weight(1f)) {
+            Text(
+                text,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        TextButton(onClick = {
+            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            clipboard.setPrimaryClip(ClipData.newPlainText("SoundGuard error", text))
+            Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+        }) {
+            Text("Copy", style = MaterialTheme.typography.labelMedium)
+        }
     }
 }
 
@@ -2522,7 +2602,7 @@ private fun OnboardingTip(
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.Top,
     ) {
         Icon(
@@ -2530,13 +2610,13 @@ private fun OnboardingTip(
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier
-                .size(28.dp)
-                .padding(top = 2.dp),
+                .size(20.dp)
+                .padding(top = 1.dp),
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -2990,6 +3070,8 @@ private fun BeneficiaryDashboard(
                                 text = "No caregivers linked yet. Enter the 6-character code above or tap + Add to share yours.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.ink500,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth(),
                             )
                         } else {
                             val supportsCarousel = caregivers.size > 1
@@ -3064,7 +3146,7 @@ private fun BeneficiaryDashboard(
 
                 message?.let {
                     Spacer(Modifier.height(12.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    CopyableErrorText(it)
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -3294,7 +3376,7 @@ private fun MicLabScreen(
                             ConfidenceBar(c.score, "")
                         }
                         Spacer(Modifier.height(8.dp))
-                        Text("Thresholds: smoke/alarm 65%, glass break 45%, fire 70% — needs 2 consistent frames. TV/music >45% raises them +20%.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
+                        Text("Thresholds: fire 20% (1.5× boost), crying 30%, smoke/alarm 45%, siren 45%, glass break 40% — single frame triggers. Booms/impacts show as medium, never alert. TV/music >45% raises thresholds +20%.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
                         if (audioState.debugText.isNotBlank()) {
                             Spacer(Modifier.height(6.dp))
                             Text("Raw YAMNet top indices: ${audioState.debugText}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.ink500)
@@ -3659,6 +3741,8 @@ private fun CaregiverDashboard(
                                 "You have not connected to any beneficiaries yet. Enter a 6-character code above or share yours with + Add.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.ink500,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth(),
                             )
                             Spacer(Modifier.height(8.dp))
                         } else {
@@ -3692,7 +3776,7 @@ private fun CaregiverDashboard(
 
                 message?.let {
                     Spacer(Modifier.height(12.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    CopyableErrorText(it)
                 }
 
                 Spacer(Modifier.height(16.dp))

@@ -28,7 +28,6 @@ import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -487,7 +486,7 @@ fun SoundGuardBottomNav(
                 onClick = { onTabSelected(SoundGuardTab.People) }
             )
             NavItem(
-                icon = Icons.Outlined.Tune,
+                icon = Icons.Outlined.Settings,
                 label = "Settings",
                 selected = selectedTab == SoundGuardTab.Settings,
                 onClick = { onTabSelected(SoundGuardTab.Settings) }

@@ -1,6 +1,6 @@
 # SoundGuard
 
-SoundGuard is an Android-first **AI safety companion** for people who may spend time alone. A deep-learning audio model (Google's YAMNet, running as TensorFlow Lite) executes **entirely on-device**, classifying live microphone audio in real time across 521 sound classes — raw audio never leaves the phone. When the model detects an emergency sound (smoke alarm, breaking glass, crying, explosion), an incident state machine escalates to a network of caregivers with server-side push delivery, in-app chat, and consent-first camera verification.
+**v1.0** — SoundGuard is an Android-first **AI safety companion** for people who may spend time alone. A deep-learning audio model (Google's YAMNet, running as TensorFlow Lite) executes **entirely on-device**, classifying live microphone audio in real time across 521 sound classes — raw audio never leaves the phone. When the model detects an emergency sound (smoke alarm, breaking glass, crying, fire), an incident state machine escalates to a network of caregivers with server-side push delivery, in-app chat, and consent-first camera verification.
 
 > **Disclaimer:** SoundGuard is a hackathon prototype. It is not a medical device, certified emergency system, or replacement for emergency services such as 911/999/112. It is not intended for clinical or life-critical use.
 
@@ -29,7 +29,8 @@ Many people — elderly individuals, people living alone, those with medical con
 ### Core Safety
 
 - **Real-time sound classification** — On-device YAMNet TensorFlow Lite model classifies 521 sound classes into 26 display categories, running continuously through an Android foreground service.
-- **High-severity emergency alerts** — Sounds like crying, glass breaking, fire, smoke alarms, explosions, and sirens trigger a structured incident flow with a 2-minute beneficiary response window.
+- **High-severity emergency alerts** — Sounds like crying, glass breaking, fire, smoke alarms, and sirens trigger a structured incident flow with a 2-minute beneficiary response window.
+- **Tuned for real-world sensitivity** — Emergency thresholds are calibrated low (fire 20% with a 1.5× score boost, crying 30%, sirens/smoke alarms 45%) and a single qualifying frame can raise an alert; loud booms and impacts are deliberately downgraded to medium severity so they never cause false emergency escalations.
 - **Sequential caregiver escalation** — If the beneficiary does not respond, alerts escalate to the primary caregiver, then sequentially to backup caregivers with 2-minute acknowledgement windows each.
 - **Medium-severity monitoring** — Events like coughing, sneezing, thunder, door knocking, and alarms/telephone are logged to the incident timeline without triggering an emergency flow.
 - **Low-severity context** — Animal sounds, water running, and similar events provide environmental context in the timeline.
@@ -48,6 +49,8 @@ Many people — elderly individuals, people living alone, those with medical con
 - **Consent-first design** — Camera consent is collected during setup and can be revoked at any time in Settings. An auto-approve toggle lets beneficiaries opt in to skip the approval prompt.
 - **CameraX integration** — Uses CameraX with camera2 for reliable photo capture across device manufacturers.
 - **Private, time-limited storage** — Photos are uploaded to a private Supabase Storage bucket and automatically expire after 30 minutes via a `pg_cron` job.
+- **Stale-request protection** — Auto-opened camera requests are only honored within 24 hours of being made, and the approval prompt expires after 1 hour, so old requests can never hijack the camera later.
+- **Onboarding-safe polling** — Camera request polling is gated to post-setup screens so it can never interrupt first-run setup or role selection.
 - **RLS-protected access** — Only the requesting caregiver and the beneficiary can view snapshots; Row Level Security policies enforce this at the database level.
 
 ### Chat and Incident Timeline
@@ -71,7 +74,7 @@ Many people — elderly individuals, people living alone, those with medical con
 - **Dark mode** — Full dark theme support with a high-contrast color system.
 - **Auto-approve camera requests** — Beneficiaries can toggle whether photo requests are automatically approved or require manual confirmation.
 - **Role switching** — Users can switch between beneficiary and caregiver roles after removing all active connections.
-- **Account data reset** — A full data wipe is available, deleting all connections, incidents, snapshots, and profile data.
+- **Account data reset** — A full data wipe is available, deleting all care connections, shared chats (for both sides), incidents, snapshots, device tokens, and profile data, then returning the user to role selection. If the server RPC fails, the app falls back to direct REST calls and shows a copyable error report for support.
 
 ---
 
@@ -87,7 +90,7 @@ Many people — elderly individuals, people living alone, those with medical con
 | Camera | CameraX (camera2 + camera-lifecycle + camera-view) |
 | Push Notifications | Firebase Cloud Messaging (`firebase-bom:33.7.0`) |
 | Phone Number Validation | libphonenumber `8.13.55` |
-| Build System | Gradle `8.10.2`, Kotlin `2.0.21`, AGP `8.5.2` |
+| Build System | Gradle `8.10.2`, Kotlin `2.0.21`, AGP `8.5.2`, version `1.0` |
 | Min SDK | 26 (Android 8.0) |
 | Target / Compile SDK | 35 (Android 15) |
 | JDK | 17 |
@@ -179,7 +182,7 @@ The YAMNet model outputs 521 raw class scores. These are aggregated into 26 disp
 | `siren_smoke` | Siren / Smoke Alarm | **High** | **Yes** |
 | `mechanism` | Mechanical Sound | None | No |
 | `construction` | Tool / Construction | None | No |
-| `explosion_gunshot` | Explosion / Gunshot | **High** | **Yes** |
+| `explosion_gunshot` | Loud Impact / Boom | Medium | No |
 | `wood` | Wood Sound | None | No |
 | `glass_break` | Glass Breaking | **High** | **Yes** |
 | `liquid` | Liquid Sound | None | No |
@@ -188,20 +191,23 @@ The YAMNet model outputs 521 raw class scores. These are aggregated into 26 disp
 
 ### Thresholds
 
+Emergency categories must clear both thresholds to raise an alert (a single qualifying frame is enough).
+
 | Category | Display Threshold | Emergency Threshold |
 |---|---|---|
-| `crying` | 0.30 | 0.40 |
+| `crying` | 0.30 | 0.30 |
 | `glass_break` | 0.30 | 0.40 |
-| `fire` | 0.50 | 0.50 |
-| `explosion_gunshot` | 0.50 | 0.60 |
-| `siren_smoke` | 0.50 | 0.65 |
-| `emergency_vehicle` | 0.50 | 0.70 |
+| `fire` | 0.30 (score ×1.5 boost) | 0.20 |
+| `siren_smoke` | 0.40 | 0.45 |
+| `emergency_vehicle` | 0.40 | 0.45 |
+| `explosion_gunshot` | 0.40 | — (medium only) |
 | `speech` | 0.25 | — |
-| `crying` (display) | 0.30 | — |
 | `human_body` | 0.30 | — |
 | `door` | 0.20 | — |
-| `animal` | 0.35 | — |
-| `vehicle` | 0.35 | — |
+| `music` | 0.30 | — |
+| `household` | 0.35 | — |
+| `object_impact` | 0.40 | — |
+| `animal` / `vehicle` | 0.35 | — |
 | `water` | 0.30 | — |
 
 ### Signal Processing Pipeline
@@ -212,9 +218,10 @@ The YAMNet model outputs 521 raw class scores. These are aggregated into 26 disp
 4. **Category aggregation** — Scores are mapped to 26 categories (top-2 summed for emergency, top-3 for others).
 5. **Smoothing** — `SoundSmoother` applies a rolling average across 3–5 frames to reduce jitter.
 6. **Hysteresis** — `HysteresisSwitcher` requires an enter threshold to switch categories and a 60% exit threshold to leave, preventing rapid flipping.
-7. **Emergency gate** — `EmergencyGate` requires 2+ consecutive qualifying frames above the emergency threshold before triggering an alert.
-8. **TV/music suppression** — When music/TV likelihood exceeds 45%, emergency thresholds are raised by +20% (capped at 85%) to reduce false alarms from television audio.
-9. **Recognition priority** — Safety-relevant categories (`crying`, `human_body`, `door`, `siren_smoke`, `emergency_vehicle`, `glass_break`, `explosion_gunshot`, `fire`, `object_impact`) take priority over louder background categories when their scores exceed 70% of the display threshold.
+7. **Emergency gate** — A single qualifying frame above the emergency threshold is enough to trigger an alert, minimizing detection latency for genuine emergencies.
+8. **Fire score boost** — The `fire` category's aggregated score is multiplied by 1.5× (capped at 1.0) because crackling fire audio scores low on YAMNet relative to its real-world urgency.
+9. **TV/music suppression** — When music/TV likelihood exceeds 45%, emergency thresholds are raised by +20% (capped at 85%) to reduce false alarms from television audio.
+10. **Recognition priority** — Safety-relevant categories (`crying`, `human_body`, `door`, `siren_smoke`, `emergency_vehicle`, `glass_break`, `fire`, `object_impact`) take priority over louder background categories when their scores exceed the display threshold floor.
 
 ### Fallback
 
@@ -246,6 +253,15 @@ Detected → WaitingUser → CaregiverNotified → CaregiverAcknowledged
 | **Medium** | Creates incident with `Detected` status. Added to timeline history. No response flow, no caregiver notification escalation. |
 | **Low / None** | No incident created. Optionally shown as contextual monitoring messages. |
 
+### Incident Superseding
+
+A new high-severity detection supersedes a stale active incident instead of being swallowed by it:
+
+- If the active incident has reached `Escalated` (all caregivers exhausted), or
+- The new sound is a **different category** than the active incident's,
+
+the old incident is archived to history and a fresh `WaitingUser` incident begins its own response flow. This prevents a second emergency (e.g., smoke alarm following an already-escalated fire) from going unreported.
+
 ### Beneficiary Response Options
 
 - **"I'm OK"** → Incident resolved as `FalseAlarm`
@@ -264,7 +280,7 @@ Detected → WaitingUser → CaregiverNotified → CaregiverAcknowledged
 
 | Table | Purpose |
 |---|---|
-| `profiles` | User profiles — id, email, full_name, phone, role, setup_completed_at. Auto-created on auth signup via trigger. |
+| `profiles` | User profiles — id, email, full_name, phone, role, setup_completed_at, deactivated_at. Auto-created on auth signup via trigger; completing setup (re-)activates the account. |
 | `beneficiary_settings` | Consent and preference flags — monitoring consent, camera share, auto-approve. |
 | `caregiver_settings` | Notification preferences. |
 | `care_connections` | Many-to-many beneficiary↔caregiver links — status, is_primary, escalation_order. |
@@ -281,8 +297,9 @@ Detected → WaitingUser → CaregiverNotified → CaregiverAcknowledged
 |---|---|
 | `create_pairing_code()` | Generate a 6-character alphanumeric invite code valid for 24 hours. |
 | `accept_pairing_code(p_code)` | Redeem a code and create (or reactivate) a care connection. Prevents self-pairing. |
+| `remove_care_connection(p_connection_id)` | SECURITY DEFINER delete of a connection after verifying the caller is a participant — immune to RLS policy drift. The app falls back to a direct REST delete if the RPC is unavailable. |
 | `link_demo_james()` | Demo shortcut — links to a fixed test beneficiary profile. |
-| `reset_my_account_data()` | Delete all user data and reset profile state. |
+| `reset_my_account_data()` | Delete all user data — connections (both directions), shared chats for both sides, incidents, snapshots, notifications, device tokens, settings — then deactivate the profile. Missing optional tables are treated as best-effort so legacy databases cannot abort the reset. |
 | `caregiver_clear_incidents_for_beneficiary(p_beneficiary_id)` | Delete all incidents, snapshots, and notifications for a specific beneficiary. |
 | `expire_camera_snapshots()` | Cron job — delete expired storage objects and mark rows as expired. |
 
@@ -301,8 +318,16 @@ All tables have RLS policies ensuring:
 - **Profile auto-creation** — A trigger on `auth.users` inserts a `profiles` row on signup.
 - **Incident notification enqueue** — A trigger on `incidents` automatically creates `notifications` rows when incidents transition to `waiting_user`, `caregiver_notified`, or `escalated`.
 - **Camera request auto-approval** — A trigger applies the beneficiary's auto-approve preference when a new snapshot request is inserted.
-- **Care link removal cleanup** — A trigger on `care_connections` DELETE/UPDATE purges associated notifications, incidents, and camera snapshots for the removed pair.
+- **Care link removal cleanup** — A trigger on `care_connections` DELETE/UPDATE purges associated notifications, incidents, and camera snapshots for the removed pair. Storage cleanup is attempted but a guarded `storage.objects` table can no longer abort the purge — unreferenced files simply age out via RLS and expiry.
 - **Field protection triggers** — Prevent mutation of immutable fields on incidents and snapshots.
+
+### Operational Resilience
+
+Several migrations (037–041) harden the backend against live-database drift:
+
+- **SECURITY DEFINER RPCs** for connection removal and account reset bypass stale RLS policies.
+- **Fresh grants + schema reload** after each repair so PostgREST resolves the functions immediately.
+- **Idempotent repairs** — missing tables/columns are created if absent; optional deletes are best-effort so a legacy schema cannot abort an entire reset.
 
 ---
 
@@ -349,41 +374,45 @@ Copy `.env.example` to `.env` and fill in:
 ```
 .
 ├── app/
-│   └── src/main/
-│       ├── java/com/yuletan/soundguard/
-│       │   ├── MainActivity.kt          # All screens, navigation, state
-│       │   ├── AudioMonitoringService.kt # Foreground service, audio capture
-│       │   ├── SoundClassifier.kt        # YAMNet inference, thresholds, smoothing
-│       │   ├── IncidentStateMachine.kt   # State transitions, escalation
-│       │   ├── UiComponents.kt           # Reusable Compose components, risk tiers
-│       │   ├── CameraPreview.kt          # CameraX preview and capture
-│       │   ├── ChatScreen.kt             # Incident timeline chat
-│       │   ├── ChatListScreen.kt         # Conversation list
-│       │   ├── ChatMessage.kt            # Message data models
-│       │   ├── ChatRepository.kt         # Chat assembly from DB records
-│       │   ├── AuthClient.kt             # Supabase Auth (Google OAuth, OTP)
-│       │   ├── ProfileClient.kt          # Supabase profile CRUD
-│       │   ├── CareClient.kt             # Pairing, connections, RPCs
-│       │   ├── IncidentClient.kt         # Incidents, notifications
-│       │   ├── SnapshotClient.kt         # Camera snapshots, storage upload
-│       │   ├── NotificationClient.kt     # Notification management
-│       │   ├── DeviceTokenClient.kt      # FCM token registration
-│       │   ├── PushMessagingService.kt   # FCM message handling
-│       │   └── SoundGuardTheme.kt        # Color tokens, theme
-│       ├── assets/
-│       │   └── yamnet.tflite             # YAMNet TFLite model
-│       └── res/
-│           └── drawable/                  # Icons and assets
+│   ├── build.gradle.kts                  # App module config, SDK versions, build config fields
+│   └── src/
+│       ├── main/
+│       │   ├── java/com/yuletan/soundguard/
+│       │   │   ├── MainActivity.kt          # All screens, navigation, state
+│       │   │   ├── AudioMonitoringService.kt # Foreground service, audio capture
+│       │   │   ├── SoundClassifier.kt        # YAMNet inference, thresholds, smoothing
+│       │   │   ├── IncidentStateMachine.kt   # State transitions, escalation
+│       │   │   ├── UiComponents.kt           # Reusable Compose components, risk tiers
+│       │   │   ├── CameraPreview.kt          # CameraX preview and capture
+│       │   │   ├── ChatScreen.kt             # Incident timeline chat
+│       │   │   ├── ChatListScreen.kt         # Conversation list
+│       │   │   ├── ChatMessage.kt            # Message data models
+│       │   │   ├── ChatRepository.kt         # Chat assembly from DB records
+│       │   │   ├── AuthClient.kt             # Supabase Auth (Google OAuth, OTP)
+│       │   │   ├── ProfileClient.kt          # Profile CRUD + account reset w/ fallbacks
+│       │   │   ├── CareClient.kt             # Pairing, connections, RPCs
+│       │   │   ├── IncidentClient.kt         # Incidents, notifications
+│       │   │   ├── SnapshotClient.kt         # Camera snapshots, storage upload
+│       │   │   ├── NotificationClient.kt     # Notification management
+│       │   │   ├── DeviceTokenClient.kt      # FCM token registration
+│       │   │   ├── PushMessagingService.kt   # FCM message handling
+│       │   │   ├── SoundGuardTheme.kt        # Color tokens, theme
+│       │   │   └── Validation.kt             # Phone/email/name validation rules
+│       │   ├── assets/
+│       │   │   └── yamnet.tflite             # YAMNet TFLite model
+│       │   └── res/
+│       │       └── drawable/                 # Icons and assets
+│       └── test/java/com/yuletan/soundguard/
+│           └── IncidentStateMachineTest.kt   # State machine unit tests
 ├── supabase/
-│   ├── migrations/                        # 34 SQL migration files
-│   └── functions/                         # Edge functions (if any)
+│   ├── migrations/                          # 41 SQL migration files (schema → RLS → repairs)
+│   └── functions/send-push/                 # Edge Function: FCM v1 dispatch for queued alerts
 ├── model/
-│   └── README.md                          # Model notes
+│   └── README.md                            # Model notes
 ├── docs/
-│   ├── privacy.md                         # Privacy documentation
-│   └── demo.md                            # Demo checklist
-├── soundguard-redesign-mockups.html       # Interactive HTML mockups
-├── soundguard-ux-audit.md                 # UI/UX audit
+│   ├── privacy.md                           # Privacy documentation
+│   └── demo.md                              # Demo checklist
+├── .env.example                             # Environment variable template
 └── README.md
 ```
 
@@ -442,17 +471,20 @@ The current debug build includes several features designed for live demonstratio
 
 ---
 
-## Planned Implementation Phases
+## Implementation Status
 
-1. Android foundation and shared domain models.
-2. Supabase schema, Row Level Security, and client configuration.
-3. Google OAuth authentication and role-based onboarding.
-4. Beneficiary-caregiver invitations and ordering.
-5. Audio foreground service and YAMNet inference.
-6. Incident state machine and escalation.
-7. Caregiver timelines and FCM notifications.
-8. Camera permissions, caregiver-triggered snapshots, and expiry.
-9. Accessibility, testing, demo reliability, and deployment.
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Android foundation and shared domain models | Shipped |
+| 2 | Supabase schema, Row Level Security, and client configuration | Shipped |
+| 3 | Google OAuth authentication and role-based onboarding | Shipped |
+| 4 | Beneficiary-caregiver invitations and ordering | Shipped |
+| 5 | Audio foreground service and YAMNet inference | Shipped |
+| 6 | Incident state machine and escalation | Shipped |
+| 7 | Caregiver timelines and FCM notifications | Shipped |
+| 8 | Camera permissions, caregiver-triggered snapshots, and expiry | Shipped |
+| 9 | Backend resilience hardening (RPC fallbacks, idempotent repairs) | Shipped |
+| 10 | Accessibility pass, broader test coverage, CI/CD, store deployment | In progress |
 
 ---
 

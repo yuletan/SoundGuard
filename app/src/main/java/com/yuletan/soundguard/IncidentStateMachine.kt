@@ -72,7 +72,21 @@ class IncidentStateMachine(
         now: Long,
     ): IncidentRecord? {
         if (severity == SoundSeverity.None || severity == SoundSeverity.Low) return null
-        if (active != null && active!!.status !in TERMINAL_STATUSES) return active
+
+        val current = active
+        if (current != null) {
+            val supersedes = severity == SoundSeverity.High &&
+                (current.status == IncidentStatus.Escalated || current.soundLabel != soundLabel)
+            when {
+                current.status in TERMINAL_STATUSES -> active = null
+                supersedes -> {
+                    history.addLast(current)
+                    while (history.size > maxHistory) history.removeFirst()
+                    active = null
+                }
+                else -> return current
+            }
+        }
 
         val incident = IncidentRecord(
             id = UUID.randomUUID().toString(),
